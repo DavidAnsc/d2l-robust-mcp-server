@@ -84,7 +84,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 |------|-------------|
 | `get_announcements` | Get course announcements from instructors |
 | `get_my_courses` | List all your enrolled courses |
-| `download_file` | Download and extract content from course files |
+| `download_file` | Download and extract content from course files (off by default in HTTP mode) |
+| `get_session_status` | Check whether the saved login still works |
 
 ## Example Prompts
 
@@ -103,13 +104,34 @@ Once connected to Claude, you can ask things like:
 | `D2L_HOST` | Your Brightspace hostname | `learn.ul.ie` |
 | `D2L_COURSE_ID` | Default course ID (optional) | none |
 
+| `D2L_SESSION_PATH` | Where the browser session is stored | `~/.d2l-session` |
+| `D2L_HEADLESS` | `true` never opens a login window; tools report `SESSION_EXPIRED` instead | `true` on Linux with no display and in HTTP mode, else `false` |
+| `D2L_DOWNLOAD_DIR` | If set, `download_file` only writes inside this folder | none |
+
 Setting `D2L_COURSE_ID` allows you to omit the course ID from tool calls.
+
+`download_file` only fetches `https://` URLs on `D2L_HOST` (or its subdomains).
+
+## Remote use (HTTP transport)
+
+```bash
+D2L_HTTP_TOKEN=$(openssl rand -hex 32) d2l-mcp --http
+```
+
+This serves MCP over streamable HTTP at `http://127.0.0.1:3000/mcp` (stateless, JSON
+responses). Clients send the token as `Authorization: Bearer <token>`, or as the last part of the
+URL (`/mcp/<token>`) when they can only take a URL. `GET /health` reports whether the session is
+valid. See [docs/raspberry-pi.md](docs/raspberry-pi.md) for running it on a headless machine
+behind a tunnel, with systemd units in [deploy/systemd](deploy/systemd).
 
 ## Session Management
 
 - **Token expiry**: Auth tokens expire after ~1 hour but auto-refresh using the saved browser session
 - **Session expiry**: Browser sessions expire after ~24h of inactivity
 - **Re-authenticate**: Run `d2l-mcp-auth` if your session expires
+- **Expired-session errors**: when no login window can open, tools fail with a message starting `SESSION_EXPIRED:`
+- **Check the session**: `d2l-mcp-auth --status` (exit code 0 valid, 2 expired), or the `get_session_status` tool
+- **Move a session between machines**: `d2l-mcp-auth --export session.json` on one, `d2l-mcp-auth --import session.json` on the other (the file holds your login cookies: delete it afterwards)
 
 ## Development
 
