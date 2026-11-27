@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { client } from '../../src/client.js';
 
 const SKIP = !process.env.D2L_INTEGRATION_TESTS;
-const COURSE_ID = parseInt(process.env.D2L_COURSE_ID || '68929');
+const COURSE_ID = Number(process.env.D2L_COURSE_ID);
+
+if (!SKIP && !COURSE_ID) {
+  throw new Error('Set D2L_COURSE_ID to a course you are enrolled in to run the integration tests.');
+}
 
 describe.skipIf(SKIP)('D2L API Integration Tests', () => {
   describe('Grades API', () => {
