@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { resolveD2LUrl, resolveDownloadDir } from '../../src/tools/files.js';
+import { extractContent, filenameFromHeaders, resolveD2LUrl, resolveDownloadDir } from '../../src/tools/files.js';
 
 describe('resolveD2LUrl', () => {
   const host = 'school.brightspace.com';
@@ -49,5 +49,31 @@ describe('resolveDownloadDir', () => {
     expect(() => resolveDownloadDir('../x', root)).toThrow(/inside/);
     expect(() => resolveDownloadDir('/etc/passwd', root)).toThrow(/inside/);
     expect(() => resolveDownloadDir(root + '-sibling/x', root)).toThrow(/inside/);
+  });
+});
+
+describe('filenameFromHeaders', () => {
+  it('reads quoted and bare filenames', () => {
+    expect(filenameFromHeaders('attachment; filename="Week 1.pdf"', 'x')).toBe('Week 1.pdf');
+    expect(filenameFromHeaders('attachment; filename=notes.docx', 'x')).toBe('notes.docx');
+  });
+
+  it('prefers the UTF-8 filename* form', () => {
+    expect(filenameFromHeaders(`attachment; filename="a.pdf"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf`, 'x')).toBe('résumé.pdf');
+  });
+
+  it('strips directories so a server cannot choose where the file goes', () => {
+    expect(filenameFromHeaders('attachment; filename="../../.bashrc"', 'x')).toBe('.bashrc');
+  });
+
+  it('falls back when there is no header', () => {
+    expect(filenameFromHeaders('', 'fallback.pdf')).toBe('fallback.pdf');
+  });
+});
+
+describe('extractContent', () => {
+  it('returns text for text files and null for binaries', async () => {
+    expect(await extractContent(Buffer.from('hello'), '.TXT')).toBe('hello');
+    expect(await extractContent(Buffer.from([0, 1, 2]), '.pdf')).toBeNull();
   });
 });

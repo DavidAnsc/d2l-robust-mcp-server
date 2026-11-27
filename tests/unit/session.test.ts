@@ -1,59 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  getSessionPath,
   getSessionStatus,
-  isHeadlessOnly,
   markSessionExpired,
   markSessionValid,
   parseExportFile,
   resetSessionStatus,
   SESSION_EXPIRED_MESSAGE,
 } from '../../src/session.js';
-
-const saved = { ...process.env };
-
-afterEach(() => {
-  process.env = { ...saved };
-});
-
-describe('isHeadlessOnly', () => {
-  it('honours D2L_HEADLESS=true', () => {
-    process.env.D2L_HEADLESS = 'true';
-    expect(isHeadlessOnly()).toBe(true);
-  });
-
-  it('honours D2L_HEADLESS=false even without a display', () => {
-    process.env.D2L_HEADLESS = 'false';
-    delete process.env.DISPLAY;
-    delete process.env.WAYLAND_DISPLAY;
-    expect(isHeadlessOnly()).toBe(false);
-  });
-
-  it.runIf(process.platform === 'linux')('is true on Linux with no display', () => {
-    delete process.env.D2L_HEADLESS;
-    delete process.env.DISPLAY;
-    delete process.env.WAYLAND_DISPLAY;
-    expect(isHeadlessOnly()).toBe(true);
-  });
-
-  it.runIf(process.platform === 'linux')('is false on Linux with a display', () => {
-    delete process.env.D2L_HEADLESS;
-    process.env.DISPLAY = ':0';
-    expect(isHeadlessOnly()).toBe(false);
-  });
-});
-
-describe('getSessionPath', () => {
-  it('uses D2L_SESSION_PATH when set', () => {
-    process.env.D2L_SESSION_PATH = '/var/lib/d2l/session';
-    expect(getSessionPath()).toBe('/var/lib/d2l/session');
-  });
-
-  it('defaults to ~/.d2l-session', () => {
-    delete process.env.D2L_SESSION_PATH;
-    expect(getSessionPath()).toMatch(/\.d2l-session$/);
-  });
-});
 
 describe('session status', () => {
   beforeEach(() => resetSessionStatus());

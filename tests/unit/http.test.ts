@@ -12,7 +12,7 @@ vi.mock('../../src/client.js', () => ({
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { client as d2l } from '../../src/client.js';
-import { createHttpApp, httpOptionsFromEnv } from '../../src/http.js';
+import { createHttpApp } from '../../src/http.js';
 import { markSessionExpired, resetSessionStatus, SessionExpiredError } from '../../src/session.js';
 import enrollmentsFixture from '../fixtures/enrollments.json';
 
@@ -28,32 +28,6 @@ async function connect(url: string, headers: Record<string, string> = {}): Promi
   await c.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
   return c;
 }
-
-describe('httpOptionsFromEnv', () => {
-  it('defaults to loopback, port 3000, no download tool', () => {
-    expect(httpOptionsFromEnv({})).toEqual({
-      host: '127.0.0.1',
-      port: 3000,
-      token: undefined,
-      allowNoAuth: false,
-      enableDownload: false,
-    });
-  });
-
-  it('reads overrides', () => {
-    const o = httpOptionsFromEnv({
-      D2L_HTTP_HOST: '0.0.0.0',
-      D2L_HTTP_PORT: '8080',
-      D2L_HTTP_TOKEN: 'abc',
-      D2L_HTTP_ENABLE_DOWNLOAD: 'true',
-    });
-    expect(o).toMatchObject({ host: '0.0.0.0', port: 8080, token: 'abc', enableDownload: true });
-  });
-
-  it('rejects a bad port', () => {
-    expect(() => httpOptionsFromEnv({ D2L_HTTP_PORT: 'abc' })).toThrow(/D2L_HTTP_PORT/);
-  });
-});
 
 describe('createHttpApp', () => {
   it('refuses to start without a token', () => {

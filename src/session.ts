@@ -1,28 +1,8 @@
-import { homedir } from 'os';
-import { join } from 'path';
-
 /**
- * Where the Playwright browser profile (cookies, SSO state) lives.
- * Override with D2L_SESSION_PATH, e.g. when running as a dedicated service user.
+ * Login-session state shared by the auth module, the API client and the tools:
+ * whether the saved session last worked, the error raised when it has expired, and
+ * the file format `d2l-mcp-auth --export` / `--import` use.
  */
-export function getSessionPath(): string {
-  return process.env.D2L_SESSION_PATH || join(homedir(), '.d2l-session');
-}
-
-/**
- * True when the server must never open a visible browser window: either it was
- * asked to (D2L_HEADLESS=true, or HTTP mode), or there is no display to show
- * one on (a Linux box without X/Wayland, such as a headless Raspberry Pi).
- */
-export function isHeadlessOnly(): boolean {
-  const flag = process.env.D2L_HEADLESS?.toLowerCase();
-  if (flag === 'true' || flag === '1') return true;
-  if (flag === 'false' || flag === '0') return false;
-  if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-    return true;
-  }
-  return false;
-}
 
 export const SESSION_EXPIRED_MESSAGE =
   'D2L session expired or missing. Log in again by running `d2l-mcp-auth` on this machine ' +

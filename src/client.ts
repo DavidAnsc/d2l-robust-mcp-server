@@ -1,28 +1,35 @@
-import { getToken, clearTokenCache, getTokenExpiry } from './auth.js';
+/**
+ * Read-only client for the Brightspace REST API.
+ *
+ * Only GET is implemented, on purpose: this server never submits, posts or changes
+ * anything on the school's site.
+ */
+import { clearTokenCache, getToken, getTokenExpiry } from './auth.js';
+import { API_VERSION, d2lBaseUrl } from './config.js';
 import { markSessionExpired, markSessionValid, SessionExpiredError } from './session.js';
 
-const D2L_HOST = process.env.D2L_HOST || 'learn.ul.ie';
-const BASE_URL = `https://${D2L_HOST}`;
-const API_VERSION = '1.57';
+const le = (orgUnitId: number) => `/d2l/api/le/${API_VERSION.le}/${orgUnitId}`;
+const lp = `/d2l/api/lp/${API_VERSION.lp}`;
 
-interface ApiResponse<T = unknown> {
-  data: T;
-  status: number;
+/** Safety stop for paged endpoints. */
+const MAX_PAGES = 50;
+
+/** A `Next` link may be absolute; keep only the path so it always goes to the configured host. */
+function toApiPath(next: string): string {
+  const url = new URL(next, d2lBaseUrl());
+  return url.pathname + url.search;
 }
 
 export class D2LClient {
-  private async request<T>(
-    method: string,
-    path: string,
-    body?: unknown
-  ): Promise<ApiResponse<T>> {
-    let response = await this.send(method, path, body);
+  /** GET a Brightspace API path and parse the JSON body. */
+  async get<T = unknown>(path: string): Promise<T> {
+    let response = await this.send(path);
 
     // 401 = the cached token went stale before its hour was up. Get a fresh one
     // from the browser session once; if that still fails, the session itself is gone.
     if (response.status === 401) {
       clearTokenCache();
-      response = await this.send(method, path, body);
+      response = await this.send(path);
       if (response.status === 401) {
         markSessionExpired();
         throw new SessionExpiredError();
@@ -35,114 +42,93 @@ export class D2LClient {
     }
 
     markSessionValid(getTokenExpiry());
-    const data = await response.json() as T;
-    return { data, status: response.status };
+    return (await response.json()) as T;
   }
 
-  private async send(method: string, path: string, body?: unknown): Promise<Response> {
+  private async send(path: string): Promise<Response> {
     const token = await getToken();
-
-    const url = `${BASE_URL}${path}`;
-    const headers: Record<string, string> = {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    };
-
-    const options: RequestInit = {
-      method,
-      headers,
-    };
-
-    if (body) {
-      options.body = JSON.stringify(body);
-    }
-
-    return fetch(url, options);
-  }
-
-  async get<T>(path: string): Promise<T> {
-    const { data } = await this.request<T>('GET', path);
-    return data;
-  }
-
-  async post<T>(path: string, body?: unknown): Promise<T> {
-    const { data } = await this.request<T>('POST', path, body);
-    return data;
-  }
-
-  async put<T>(path: string, body?: unknown): Promise<T> {
-    const { data } = await this.request<T>('PUT', path, body);
-    return data;
-  }
-
-  async delete<T>(path: string): Promise<T> {
-    const { data } = await this.request<T>('DELETE', path);
-    return data;
-  }
-
-  // Dropbox/Assignment endpoints
-  async getDropboxFolders(orgUnitId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/dropbox/folders/`);
-  }
-
-  async getDropboxFolder(orgUnitId: number, folderId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/dropbox/folders/${folderId}`);
-  }
-
-  async getDropboxSubmissions(orgUnitId: number, folderId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/dropbox/folders/${folderId}/submissions/`);
-  }
-
-  // Content endpoints
-  async getContentToc(orgUnitId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/content/toc`);
-  }
-
-  async getContentTopic(orgUnitId: number, topicId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/content/topics/${topicId}`);
-  }
-
-  async getContentModules(orgUnitId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/content/root/`);
-  }
-
-  async getContentModule(orgUnitId: number, moduleId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/content/modules/${moduleId}/structure/`);
-  }
-
-  // User info
-  async whoami() {
-    return this.get(`/d2l/api/lp/1.43/users/whoami`);
-  }
-
-  // Grades endpoints
-  async getMyGradeValues(orgUnitId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/grades/values/myGradeValues/`);
-  }
-
-  async getGradeObjects(orgUnitId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/grades/`);
-  }
-
-  // Calendar endpoints
-  async getMyCalendarEvents(orgUnitId: number, startDateTime: string, endDateTime: string) {
-    const params = new URLSearchParams({
-      startDateTime,
-      endDateTime,
+    return fetch(`${d2lBaseUrl()}${path}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     });
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/calendar/events/myEvents/?${params}`);
   }
 
-  // News/Announcements endpoints
-  async getNews(orgUnitId: number) {
-    return this.get(`/d2l/api/le/${API_VERSION}/${orgUnitId}/news/`);
+  // Assignments (dropbox)
+  getDropboxFolders(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/dropbox/folders/`);
   }
 
-  // Enrollments endpoints (uses LP API v1.43)
+  getDropboxFolder(orgUnitId: number, folderId: number) {
+    return this.get(`${le(orgUnitId)}/dropbox/folders/${folderId}`);
+  }
+
+  getDropboxSubmissions(orgUnitId: number, folderId: number) {
+    return this.get(`${le(orgUnitId)}/dropbox/folders/${folderId}/submissions/`);
+  }
+
+  // Content
+  getContentToc(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/content/toc`);
+  }
+
+  getContentTopic(orgUnitId: number, topicId: number) {
+    return this.get(`${le(orgUnitId)}/content/topics/${topicId}`);
+  }
+
+  getContentModules(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/content/root/`);
+  }
+
+  getContentModule(orgUnitId: number, moduleId: number) {
+    return this.get(`${le(orgUnitId)}/content/modules/${moduleId}/structure/`);
+  }
+
+  // Grades
+  getMyGradeValues(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/grades/values/myGradeValues/`);
+  }
+
+  getGradeObjects(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/grades/`);
+  }
+
+  // Calendar (an ObjectListPage: follow `Next` until it is empty)
+  async getMyCalendarEvents(orgUnitId: number, startDateTime: string, endDateTime: string) {
+    const params = new URLSearchParams({ startDateTime, endDateTime });
+    let path: string | null = `${le(orgUnitId)}/calendar/events/myEvents/?${params}`;
+    const objects: unknown[] = [];
+    for (let page = 0; path && page < MAX_PAGES; page++) {
+      const res: { Objects?: unknown[]; Next?: string | null } = await this.get(path);
+      objects.push(...(res.Objects ?? []));
+      path = res.Next ? toApiPath(res.Next) : null;
+    }
+    return { Objects: objects };
+  }
+
+  // Announcements
+  getNews(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/news/`);
+  }
+
+  // User and enrollments
+  whoami() {
+    return this.get(`${lp}/users/whoami`);
+  }
+
+  /** All enrollments (a PagedResultSet: follow the bookmark while HasMoreItems). */
   async getMyEnrollments() {
-    return this.get(`/d2l/api/lp/1.43/enrollments/myenrollments/`);
+    const items: unknown[] = [];
+    let bookmark: string | undefined;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const query = bookmark ? `?bookmark=${encodeURIComponent(bookmark)}` : '';
+      const res: { Items?: unknown[]; PagingInfo?: { Bookmark?: string; HasMoreItems?: boolean } } =
+        await this.get(`${lp}/enrollments/myenrollments/${query}`);
+      items.push(...(res.Items ?? []));
+      if (!res.PagingInfo?.HasMoreItems || !res.PagingInfo.Bookmark) break;
+      bookmark = res.PagingInfo.Bookmark;
+    }
+    return { Items: items };
   }
-
 }
 
 export const client = new D2LClient();

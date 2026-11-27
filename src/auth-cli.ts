@@ -15,7 +15,8 @@
 import { chromium } from 'playwright';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { clearTokenCache, getToken, getTokenExpiry } from './auth.js';
-import { ExportFile, getSessionPath, isHeadlessOnly, parseExportFile, SessionExpiredError } from './session.js';
+import { d2lHost, isHeadlessOnly, sessionPath } from './config.js';
+import { ExportFile, parseExportFile, SessionExpiredError } from './session.js';
 
 const USAGE = `Usage:
   d2l-mcp-auth                  Log in and save the session
@@ -49,17 +50,17 @@ async function login(): Promise<void> {
 }
 
 async function exportSession(file: string): Promise<void> {
-  const sessionPath = getSessionPath();
-  if (!existsSync(sessionPath)) {
-    throw new Error(`No saved session at ${sessionPath}. Run d2l-mcp-auth first.`);
+  const profile = sessionPath();
+  if (!existsSync(profile)) {
+    throw new Error(`No saved session at ${profile}. Run d2l-mcp-auth first.`);
   }
-  const context = await chromium.launchPersistentContext(sessionPath, { headless: true });
+  const context = await chromium.launchPersistentContext(profile, { headless: true });
   try {
     const { cookies } = await context.storageState();
     const out: ExportFile = {
       format: 'd2l-mcp-session',
       version: 1,
-      host: process.env.D2L_HOST || 'learn.ul.ie',
+      host: d2lHost(),
       exportedAt: new Date().toISOString(),
       cookies,
     };
@@ -75,21 +76,21 @@ async function exportSession(file: string): Promise<void> {
 
 async function importSession(file: string): Promise<void> {
   const data = parseExportFile(readFileSync(file, 'utf-8'));
-  const currentHost = process.env.D2L_HOST || 'learn.ul.ie';
+  const currentHost = d2lHost();
   if (data.host !== currentHost) {
     console.warn(`Warning: file was exported for ${data.host}, but D2L_HOST here is ${currentHost}.`);
   }
-  const sessionPath = getSessionPath();
-  mkdirSync(sessionPath, { recursive: true, mode: 0o700 });
-  chmodSync(sessionPath, 0o700);
-  const context = await chromium.launchPersistentContext(sessionPath, { headless: true });
+  const profile = sessionPath();
+  mkdirSync(profile, { recursive: true, mode: 0o700 });
+  chmodSync(profile, 0o700);
+  const context = await chromium.launchPersistentContext(profile, { headless: true });
   try {
     await context.clearCookies();
     await context.addCookies(data.cookies);
   } finally {
     await context.close();
   }
-  console.log(`Imported ${data.cookies.length} cookies into ${sessionPath}.`);
+  console.log(`Imported ${data.cookies.length} cookies into ${profile}.`);
   console.log('Checking the session...');
   await status();
 }

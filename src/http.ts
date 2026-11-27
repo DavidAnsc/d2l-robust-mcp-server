@@ -1,34 +1,13 @@
 import { createServer as createHttpServer, IncomingMessage, Server, ServerResponse } from 'http';
 import { timingSafeEqual, createHash } from 'crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createServer, ServerOptions } from './server.js';
+import type { HttpConfig } from './config.js';
+import { createServer } from './server.js';
 import { getSessionStatus } from './session.js';
-import { sessionStatusText } from './server.js';
+import { sessionStatusReport } from './tools/session.js';
 
-export interface HttpOptions extends ServerOptions {
-  host: string;
-  port: number;
-  /** Shared secret clients must send. Undefined only when allowNoAuth is set. */
-  token?: string;
-  /** Run without a token, for when something in front (e.g. Cloudflare Access) already authenticates. */
-  allowNoAuth?: boolean;
-}
-
-export function httpOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): HttpOptions {
-  const port = parseInt(env.D2L_HTTP_PORT || '3000', 10);
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    throw new Error(`Invalid D2L_HTTP_PORT: ${env.D2L_HTTP_PORT}`);
-  }
-  const download = env.D2L_HTTP_ENABLE_DOWNLOAD?.toLowerCase();
-  return {
-    host: env.D2L_HTTP_HOST || '127.0.0.1',
-    port,
-    token: env.D2L_HTTP_TOKEN || undefined,
-    allowNoAuth: env.D2L_HTTP_ALLOW_NO_AUTH === 'true',
-    // download_file writes to this machine's disk, so it is off for remote clients unless asked for.
-    enableDownload: download === 'true' || download === '1',
-  };
-}
+/** HttpConfig with the optional parts optional, for callers (and tests) that build it by hand. */
+export type HttpOptions = Pick<HttpConfig, 'host' | 'port'> & Partial<Omit<HttpConfig, 'host' | 'port'>>;
 
 function sameSecret(a: string, b: string): boolean {
   // Hash first so both buffers have equal length; timingSafeEqual needs that.
@@ -65,6 +44,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
 async function handleMcp(req: IncomingMessage, res: ServerResponse, opts: HttpOptions): Promise<void> {
   // Stateless: a fresh MCP server + transport per request. No session map to leak or expire,
   // and the D2L token cache (module-level) is still shared across requests.
+  // download_file writes to this machine's disk, so remote clients only get it when asked for.
   const server = createServer({ enableDownload: opts.enableDownload ?? false });
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -96,7 +76,7 @@ export function createHttpApp(opts: HttpOptions): Server {
           // A live check launches a browser; don't let anonymous callers trigger that.
           return sendJson(res, 401, { error: 'Unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
         }
-        const status = live ? JSON.parse(await sessionStatusText(true)) : getSessionStatus();
+        const status = live ? await sessionStatusReport(true) : getSessionStatus();
         // Unauthenticated callers only learn the state word, nothing else.
         const body = live ? status : { state: status.state };
         return sendJson(res, status.state === 'expired' ? 503 : 200, body);
