@@ -89,6 +89,8 @@ export interface HttpConfig {
   allowNoAuth: boolean;
   /** Expose download_file, which writes to this machine's disk. */
   enableDownload: boolean;
+  /** Accept a fresh login at POST /session (from `d2l-mcp-auth --push`). Default true. */
+  allowSessionPush: boolean;
 }
 
 export function httpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig {
@@ -103,7 +105,30 @@ export function httpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig {
     token: env.D2L_HTTP_TOKEN || undefined,
     allowNoAuth: env.D2L_HTTP_ALLOW_NO_AUTH === 'true',
     enableDownload: download === 'true' || download === '1',
+    allowSessionPush: !['false', '0'].includes(env.D2L_HTTP_ALLOW_SESSION_PUSH?.toLowerCase() ?? ''),
   };
+}
+
+/**
+ * Where to send a message when the login session expires, e.g. https://ntfy.sh/<your-topic>.
+ * The message is POSTed as plain text.
+ */
+export function notifyUrl(): string | undefined {
+  return process.env.D2L_NOTIFY_URL || undefined;
+}
+
+/**
+ * Options for launching the browser: D2L_BROWSER_PATH points at a Chromium to use instead of
+ * the one Playwright downloaded (for example /usr/bin/chromium on Raspberry Pi OS).
+ */
+export function browserLaunchOptions(): { executablePath?: string } {
+  return process.env.D2L_BROWSER_PATH ? { executablePath: process.env.D2L_BROWSER_PATH } : {};
+}
+
+/** Largest file read_file will fetch, in bytes (D2L_MAX_FILE_MB, default 50). */
+export function maxFileBytes(): number {
+  const mb = Number(process.env.D2L_MAX_FILE_MB || '50');
+  return (Number.isFinite(mb) && mb > 0 ? mb : 50) * 1024 * 1024;
 }
 
 /** When set, download_file only writes inside this folder. */

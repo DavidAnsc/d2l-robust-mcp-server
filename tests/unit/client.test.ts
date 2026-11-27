@@ -78,3 +78,45 @@ describe('D2LClient auth handling', () => {
     expect(getSessionStatus().state).toBe('unknown');
   });
 });
+
+describe('D2LClient.getFile', () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.D2L_MAX_FILE_MB;
+  });
+
+  it('returns the bytes, type and served file name', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('hello', {
+        headers: { 'content-type': 'text/plain', 'content-disposition': "attachment; filename*=UTF-8''Week%203%20notes.txt" },
+      })
+    );
+    const f = await client.getTopicFile(100, 5);
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/d2l\/api\/le\/[\d.]+\/100\/content\/topics\/5\/file$/);
+    expect(f).toEqual({ data: Buffer.from('hello'), contentType: 'text/plain', filename: 'Week 3 notes.txt' });
+  });
+
+  it('refuses files over D2L_MAX_FILE_MB without reading them', async () => {
+    process.env.D2L_MAX_FILE_MB = '1';
+    fetchMock.mockResolvedValueOnce(new Response('x', { headers: { 'content-length': String(5 * 1024 * 1024) } }));
+    await expect(client.getNewsAttachment(1, 2, 3)).rejects.toThrow(/over the 1 MB limit/);
+  });
+
+  it('uses the right paths for submission and feedback files', async () => {
+    fetchMock.mockImplementation(async () => new Response('x'));
+    await client.getSubmissionFile(1, 2, 3, 4);
+    await client.getFeedbackFile(1, 2, 'user', 9, 4);
+    await client.getDropboxAttachment(1, 2, 4);
+    const paths = fetchMock.mock.calls.map((c) => new URL(c[0]).pathname.replace(/^\/d2l\/api\/le\/[\d.]+/, ''));
+    expect(paths).toEqual([
+      '/1/dropbox/folders/2/submissions/3/files/4',
+      '/1/dropbox/folders/2/feedback/user/9/attachments/4',
+      '/1/dropbox/folders/2/attachments/4',
+    ]);
+  });
+});

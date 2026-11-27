@@ -1,10 +1,12 @@
 [Unit]
-Description=Check the D2L MCP session every 3 hours
+Description=Check the D2L MCP session every hour
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=3h
-RandomizedDelaySec=10min
+# Hourly: the API token lasts an hour, so each check re-opens the saved browser session,
+# which is what keeps the school's login from timing out for inactivity.
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
 Persistent=true
 
 [Install]

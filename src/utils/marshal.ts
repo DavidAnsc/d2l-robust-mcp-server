@@ -90,6 +90,26 @@ export function removeEmpty<T extends Record<string, unknown>>(obj: T): Partial<
   return result;
 }
 
+// ============= FILES =============
+/** A file as Brightspace lists it on announcements, assignments, submissions and feedback. */
+export interface RawFile {
+  FileId?: number;
+  FileName: string;
+  Size: number;
+}
+
+export interface MarshalledFile {
+  /** Pass to read_file to get the file's contents. */
+  fileId?: number;
+  name: string;
+  size: string;
+}
+
+export function marshalFiles(files: RawFile[] | null | undefined): MarshalledFile[] | undefined {
+  if (!files?.length) return undefined;
+  return files.map((f) => removeEmpty({ fileId: f.FileId, name: f.FileName, size: formatFileSize(f.Size) }) as MarshalledFile);
+}
+
 // ============= GRADES =============
 export interface RawGrade {
   PointsNumerator: number | null;
@@ -127,7 +147,7 @@ export interface RawAnnouncement {
   Body: { Text: string; Html: string };
   CreatedDate: string;
   StartDate: string | null;
-  Attachments: Array<{ FileName: string; Size: number }>;
+  Attachments: RawFile[];
   IsPublished: boolean;
 }
 
@@ -136,7 +156,7 @@ export interface MarshalledAnnouncement {
   title: string;
   body: string;
   date: string | null;
-  attachments?: Array<{ name: string; size: string }>;
+  attachments?: MarshalledFile[];
 }
 
 export function marshalAnnouncements(announcements: RawAnnouncement[]): MarshalledAnnouncement[] {
@@ -145,9 +165,7 @@ export function marshalAnnouncements(announcements: RawAnnouncement[]): Marshall
     title: a.Title,
     body: stripHtml(a.Body.Text || a.Body.Html),
     date: formatDate(a.CreatedDate),
-    attachments: a.Attachments?.length > 0
-      ? a.Attachments.map((att) => ({ name: att.FileName, size: formatFileSize(att.Size) }))
-      : undefined,
+    attachments: marshalFiles(a.Attachments),
   })) as MarshalledAnnouncement[];
 }
 
@@ -249,7 +267,7 @@ export interface RawAssignment {
   DueDate: string | null;
   CustomInstructions: { Text: string; Html: string };
   Assessment: { ScoreDenominator: number };
-  Attachments: Array<{ FileName: string; Size: number }>;
+  Attachments: RawFile[];
   LinkAttachments: Array<{ Name: string; Url: string }>;
   AllowableFileType: number;
   CustomAllowableFileTypes: string[] | null;
@@ -262,7 +280,7 @@ export interface MarshalledAssignment {
   dueDateRelative: string | null;
   points: number;
   instructions: string | null;
-  attachments?: Array<{ name: string; size: string }>;
+  attachments?: MarshalledFile[];
   links?: Array<{ name: string; url: string }>;
   allowedFileTypes: string | null;
 }
@@ -285,9 +303,7 @@ export function marshalAssignment(a: RawAssignment): MarshalledAssignment {
     dueDateRelative: formatRelativeDate(a.DueDate),
     points: a.Assessment?.ScoreDenominator ?? 0,
     instructions: stripHtml(a.CustomInstructions?.Text || a.CustomInstructions?.Html) || null,
-    attachments: a.Attachments?.length > 0
-      ? a.Attachments.map((att) => ({ name: att.FileName, size: formatFileSize(att.Size) }))
-      : undefined,
+    attachments: marshalFiles(a.Attachments),
     links: a.LinkAttachments?.length > 0
       ? a.LinkAttachments.map((l) => ({ name: l.Name, url: l.Url }))
       : undefined,
@@ -299,51 +315,80 @@ export function marshalAssignment(a: RawAssignment): MarshalledAssignment {
 export interface RawSubmission {
   Entity: {
     DisplayName: string;
+    EntityId?: number;
+    EntityType?: string;
   };
   Status: number;
   Feedback: {
     Score: number | null;
     Feedback: { Text: string; Html: string } | null;
+    Files?: RawFile[];
   } | null;
   Submissions: Array<{
     Id: number;
     SubmissionDate: string;
-    Comment: { Text: string };
-    Files: Array<{
-      FileId: number;
-      FileName: string;
-      Size: number;
-    }>;
+    Comment: { Text: string } | null;
+    Files: RawFile[];
   }>;
   CompletionDate: string | null;
+}
+
+export interface MarshalledAttempt {
+  /** Pass to read_file, with a file's fileId, to read what you submitted. */
+  submissionId: number;
+  submissionDate: string | null;
+  files: MarshalledFile[];
+  comment?: string;
 }
 
 export interface MarshalledSubmission {
   submitted: boolean;
   submittedBy: string;
+  /** "user" or "group": needed, with entityId, to read feedback files. */
+  entityType?: string;
+  entityId?: number;
+  /** Latest attempt (top-level fields kept for a quick answer). */
+  submissionId?: number;
   submissionDate: string | null;
   submissionDateRelative: string | null;
-  files: Array<{ name: string; size: string }>;
+  files: MarshalledFile[];
   comment: string | null;
   grade: number | null;
   feedback: string | null;
+  /** Files the instructor attached to the feedback (read with read_file + feedbackFileId). */
+  feedbackFiles?: MarshalledFile[];
+  /** Earlier attempts, newest first, when there was more than one. */
+  earlierAttempts?: MarshalledAttempt[];
 }
 
 export function marshalSubmissions(submissions: RawSubmission[]): MarshalledSubmission[] {
   return submissions.map((s) => {
-    const latestSubmission = s.Submissions?.[0];
+    // Newest first; don't rely on the API's order.
+    const attempts = [...(s.Submissions ?? [])].sort(
+      (a, b) => new Date(b.SubmissionDate).getTime() - new Date(a.SubmissionDate).getTime()
+    );
+    const latest = attempts[0];
     return removeEmpty({
-      submitted: s.Status === 1,
+      submitted: s.Status === 1 || attempts.length > 0,
       submittedBy: s.Entity.DisplayName,
-      submissionDate: formatDate(latestSubmission?.SubmissionDate),
-      submissionDateRelative: formatRelativeDate(latestSubmission?.SubmissionDate),
-      files: latestSubmission?.Files?.map((f) => ({
-        name: f.FileName,
-        size: formatFileSize(f.Size),
-      })) || [],
-      comment: latestSubmission?.Comment?.Text?.trim() || null,
+      entityType: s.Entity.EntityType?.toLowerCase(),
+      entityId: s.Entity.EntityId,
+      submissionId: latest?.Id,
+      submissionDate: formatDate(latest?.SubmissionDate),
+      submissionDateRelative: formatRelativeDate(latest?.SubmissionDate),
+      files: marshalFiles(latest?.Files) ?? [],
+      comment: latest?.Comment?.Text?.trim() || null,
       grade: s.Feedback?.Score ?? null,
       feedback: stripHtml(s.Feedback?.Feedback?.Text || s.Feedback?.Feedback?.Html) || null,
+      feedbackFiles: marshalFiles(s.Feedback?.Files),
+      earlierAttempts: attempts.length > 1
+        ? attempts.slice(1).map((a) => removeEmpty({
+            submissionId: a.Id,
+            submissionDate: formatDate(a.SubmissionDate),
+            files: marshalFiles(a.Files) ?? [],
+            comment: a.Comment?.Text?.trim() || undefined,
+          }) as MarshalledAttempt)
+        : undefined,
     });
   }) as MarshalledSubmission[];
 }
@@ -417,6 +462,9 @@ export interface RawTopic {
   Description?: { Text: string; Html: string };
   Url?: string;
   TypeIdentifier?: string;
+  /** 1 = file, 3 = link. */
+  TopicType?: number;
+  IsBroken?: boolean;
 }
 
 export interface MarshalledTopicDetail {

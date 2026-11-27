@@ -10,8 +10,8 @@
  *  - headless-only (no display, or HTTP mode): SessionExpiredError, so the caller can tell you.
  */
 import { chromium, BrowserContext, Page } from 'playwright';
-import { existsSync } from 'fs';
-import { d2lBaseUrl, isHeadlessOnly, sessionPath } from './config.js';
+import { chmodSync, existsSync, mkdirSync } from 'fs';
+import { browserLaunchOptions, d2lBaseUrl, isHeadlessOnly, sessionPath } from './config.js';
 import { markSessionExpired, markSessionValid, SessionExpiredError } from './session.js';
 
 const TOKEN_TTL_MS = 60 * 60 * 1000; // Brightspace tokens last about an hour
@@ -28,12 +28,24 @@ const TIMEOUTS = {
 let tokenCache = { token: '', expiresAt: 0 };
 let inFlight: Promise<string> | null = null;
 
+/**
+ * Chromium can only have the saved profile open once at a time. Every use of it (token
+ * refresh, cookie-based download, session import) runs through this queue.
+ */
+let profileQueue: Promise<unknown> = Promise.resolve();
+export function withProfile<T>(fn: () => Promise<T>): Promise<T> {
+  const run = profileQueue.then(fn, fn);
+  profileQueue = run.catch(() => undefined);
+  return run;
+}
+
 function isLoginPage(url: string): boolean {
   return url.includes('login') || url.includes('microsoftonline') || url.includes('sso') || url.includes('adfs');
 }
 
 function launch(headless: boolean): Promise<BrowserContext> {
   return chromium.launchPersistentContext(sessionPath(), {
+    ...browserLaunchOptions(),
     headless,
     viewport: { width: 1280, height: 720 },
   });
@@ -142,7 +154,7 @@ export async function getToken(): Promise<string> {
     return tokenCache.token;
   }
   // Several tool calls can arrive at once; launch at most one browser for them.
-  inFlight ??= fetchToken().finally(() => {
+  inFlight ??= withProfile(fetchToken).finally(() => {
     inFlight = null;
   });
   return inFlight;
@@ -157,10 +169,43 @@ export function getTokenExpiry(): number {
 }
 
 /**
- * A logged-in browser context, for requests that need the session's cookies rather than
- * the API token (file downloads). The caller must close it.
+ * Run `fn` with a logged-in browser context, for requests that need the session's cookies
+ * rather than the API token (files under /content/). The context is closed afterwards.
  */
-export async function getAuthenticatedContext(): Promise<BrowserContext> {
+export function withAuthenticatedContext<T>(fn: (context: BrowserContext) => Promise<T>): Promise<T> {
+  return withProfile(async () => {
+    const context = await getAuthenticatedContext();
+    try {
+      return await fn(context);
+    } finally {
+      await context.close();
+    }
+  });
+}
+
+/**
+ * Replace the saved session's cookies (from `d2l-mcp-auth --export`, or pushed over HTTP),
+ * then check that they work. Returns the new token's expiry.
+ */
+export async function importCookies(cookies: Parameters<BrowserContext['addCookies']>[0]): Promise<number> {
+  await withProfile(async () => {
+    mkdirSync(sessionPath(), { recursive: true, mode: 0o700 });
+    chmodSync(sessionPath(), 0o700);
+    const context = await launch(true);
+    try {
+      await context.clearCookies();
+      await context.addCookies(cookies);
+    } finally {
+      await context.close();
+    }
+  });
+  clearTokenCache();
+  await getToken();
+  return tokenCache.expiresAt;
+}
+
+/** Use withAuthenticatedContext instead: this one is not queued. The caller must close it. */
+async function getAuthenticatedContext(): Promise<BrowserContext> {
   const hasSession = existsSync(sessionPath());
   const headlessOnly = isHeadlessOnly();
   if (!hasSession && headlessOnly) expired();

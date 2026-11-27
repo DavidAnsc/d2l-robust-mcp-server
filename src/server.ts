@@ -10,6 +10,7 @@ import { newsTools } from './tools/news.js';
 import { enrollmentTools } from './tools/enrollments.js';
 import { fileTools } from './tools/files.js';
 import { sessionTools } from './tools/session.js';
+import { readTools, ToolContent } from './tools/read.js';
 import { SessionExpiredError } from './session.js';
 
 const pkg = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -25,7 +26,7 @@ interface ToolDef {
   schema: ZodRawShape;
   // Each module types its own args; the SDK validates them against `schema` before the call.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handler: (args: any) => Promise<string>;
+  handler: (args: any) => Promise<string | ToolContent[]>;
 }
 
 /** Every tool that only reads from Brightspace. */
@@ -37,7 +38,14 @@ const readOnlyTools: Record<string, ToolDef> = {
   ...newsTools,
   ...enrollmentTools,
   ...sessionTools,
+  ...readTools,
 };
+
+/** First line of an error, without terminal colour codes (Playwright adds a call log and ANSI codes). */
+export function cleanMessage(message: string): string {
+  // eslint-disable-next-line no-control-regex
+  return message.replace(/\u001b\[[0-9;]*m/g, '').split('\nCall log:')[0].trim();
+}
 
 /**
  * Turn a thrown error into a tool result the model can read and relay.
@@ -47,14 +55,15 @@ export function errorResult(error: unknown): CallToolResult {
   if (error instanceof SessionExpiredError) {
     return { isError: true, content: [{ type: 'text', text: `SESSION_EXPIRED: ${error.message}` }] };
   }
-  const message = error instanceof Error ? error.message : String(error);
+  const message = cleanMessage(error instanceof Error ? error.message : String(error));
   return { isError: true, content: [{ type: 'text', text: `Error: ${message}` }] };
 }
 
 function register(server: McpServer, name: string, tool: ToolDef): void {
   server.tool(name, tool.description, tool.schema, async (args: unknown): Promise<CallToolResult> => {
     try {
-      return { content: [{ type: 'text', text: await tool.handler(args) }] };
+      const out = await tool.handler(args);
+      return { content: typeof out === 'string' ? [{ type: 'text', text: out }] : out };
     } catch (error) {
       return errorResult(error);
     }

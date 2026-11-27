@@ -3,8 +3,11 @@ import { timingSafeEqual, createHash } from 'crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { HttpConfig } from './config.js';
 import { createServer } from './server.js';
-import { getSessionStatus } from './session.js';
+import { importCookies } from './auth.js';
+import { d2lHost } from './config.js';
+import { getSessionStatus, parseExportFile, SessionExpiredError } from './session.js';
 import { sessionStatusReport } from './tools/session.js';
+import { cleanMessage } from './server.js';
 
 /** HttpConfig with the optional parts optional, for callers (and tests) that build it by hand. */
 export type HttpOptions = Pick<HttpConfig, 'host' | 'port'> & Partial<Omit<HttpConfig, 'host' | 'port'>>;
@@ -39,6 +42,64 @@ function isAuthorized(req: IncomingMessage, opts: HttpOptions, pathToken?: strin
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
   res.end(JSON.stringify(body));
+}
+
+/** A session export is a few KB; refuse anything much bigger before reading it all. */
+const MAX_SESSION_BODY = 1024 * 1024;
+
+function readBody(req: IncomingMessage, limit: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error('too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * POST /session: replace the server's saved login with cookies from `d2l-mcp-auth --push`.
+ * This is how a laptop re-logs the Pi in from anywhere, without SSH.
+ */
+async function handleSessionPush(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let text: string;
+  try {
+    text = await readBody(req, MAX_SESSION_BODY);
+  } catch {
+    return sendJson(res, 413, { error: 'Body too large' });
+  }
+
+  let data;
+  try {
+    data = parseExportFile(text);
+  } catch (error) {
+    return sendJson(res, 400, { error: error instanceof Error ? error.message : 'Invalid body' });
+  }
+  if (data.host !== d2lHost()) {
+    return sendJson(res, 400, { error: `Session is for ${data.host}, but this server uses ${d2lHost()}.` });
+  }
+
+  try {
+    const expiresAt = await importCookies(data.cookies);
+    console.error(`Session replaced via POST /session (${data.cookies.length} cookies).`);
+    return sendJson(res, 200, { state: 'valid', cookies: data.cookies.length, tokenExpiresAt: new Date(expiresAt).toISOString() });
+  } catch (error) {
+    if (error instanceof SessionExpiredError) {
+      return sendJson(res, 422, { state: 'expired', error: 'Those cookies do not log in. Log in again on the laptop, then push.' });
+    }
+    // Saved, but the check couldn't reach Brightspace (network, D2L down): say so.
+    console.error('Session pushed, but checking it failed:', error);
+    const reason = cleanMessage(error instanceof Error ? error.message : String(error));
+    return sendJson(res, 502, { state: 'unknown', error: `Saved the login, but could not check it: ${reason}` });
+  }
 }
 
 async function handleMcp(req: IncomingMessage, res: ServerResponse, opts: HttpOptions): Promise<void> {
@@ -80,6 +141,14 @@ export function createHttpApp(opts: HttpOptions): Server {
         // Unauthenticated callers only learn the state word, nothing else.
         const body = live ? status : { state: status.state };
         return sendJson(res, status.state === 'expired' ? 503 : 200, body);
+      }
+
+      if (url.pathname === '/session') {
+        // Header token only: this endpoint changes state, so no token-in-URL form.
+        if (!isAuthorized(req, opts)) return sendJson(res, 401, { error: 'Unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
+        if (opts.allowSessionPush === false) return sendJson(res, 403, { error: 'Session push is off (D2L_HTTP_ALLOW_SESSION_PUSH=false).' });
+        if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'POST' });
+        return await handleSessionPush(req, res);
       }
 
       const route = matchMcpRoute(url.pathname);

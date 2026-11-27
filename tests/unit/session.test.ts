@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getSessionStatus,
   markSessionExpired,
@@ -6,6 +6,7 @@ import {
   parseExportFile,
   resetSessionStatus,
   SESSION_EXPIRED_MESSAGE,
+  sessionEndpoint,
 } from '../../src/session.js';
 
 describe('session status', () => {
@@ -48,5 +49,43 @@ describe('parseExportFile', () => {
 
   it('rejects other JSON', () => {
     expect(() => parseExportFile(JSON.stringify({ cookies: [] }))).toThrow(/Not a d2l-mcp-auth/);
+  });
+});
+
+describe('sessionEndpoint', () => {
+  it('turns any form of the server URL into its /session address', () => {
+    expect(sessionEndpoint('https://pi.example.com')).toBe('https://pi.example.com/session');
+    expect(sessionEndpoint('https://pi.example.com/mcp')).toBe('https://pi.example.com/session');
+    expect(sessionEndpoint('https://pi.example.com/mcp/secret-token')).toBe('https://pi.example.com/session');
+    expect(sessionEndpoint('https://example.com/d2l/mcp/?x=1')).toBe('https://example.com/d2l/session');
+  });
+});
+
+describe('expiry notification', () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response('ok'));
+  beforeEach(() => {
+    resetSessionStatus();
+    fetchMock.mockClear();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.D2L_NOTIFY_URL;
+  });
+
+  it('posts once when the session goes from valid to expired', () => {
+    process.env.D2L_NOTIFY_URL = 'https://ntfy.sh/my-topic';
+    markSessionValid();
+    markSessionExpired();
+    markSessionExpired();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://ntfy.sh/my-topic');
+    expect(init.body).toContain('d2l-mcp-auth --push');
+  });
+
+  it('does nothing without D2L_NOTIFY_URL', () => {
+    markSessionExpired();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

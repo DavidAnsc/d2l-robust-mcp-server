@@ -122,4 +122,35 @@ describe.skipIf(SKIP)('D2L API Integration Tests', () => {
       expect(user).toHaveProperty('LastName');
     });
   });
+
+  describe('Files (read_file)', () => {
+    it('reads the first file topic in the course', async () => {
+      const { readFile } = await import('../../src/tools/read.js');
+      const toc = (await client.getContentToc(COURSE_ID)) as { Modules: any[] };
+      const topics: any[] = [];
+      const walk = (mods: any[]) => mods?.forEach((m) => { topics.push(...(m.Topics ?? [])); walk(m.Modules); });
+      walk(toc.Modules);
+      const fileTopic = topics.find((t) => t.TypeIdentifier === 'File');
+      if (!fileTopic) return; // course has no file topics
+      const out = await readFile({ source: 'topic', orgUnitId: COURSE_ID, topicId: fileTopic.TopicId });
+      console.log((out[0] as { text: string }).text.slice(0, 500));
+      expect((out[0] as { text: string }).text).toMatch(/^File: /);
+    }, 120_000);
+
+    it('reads your newest submitted file, if any', async () => {
+      const { readFile } = await import('../../src/tools/read.js');
+      const folders = (await client.getDropboxFolders(COURSE_ID)) as any[];
+      for (const folder of folders) {
+        const subs = (await client.getDropboxSubmissions(COURSE_ID, folder.Id)) as any[];
+        const attempt = subs[0]?.Submissions?.find((a: any) => a.Files?.length);
+        if (!attempt) continue;
+        const out = await readFile({
+          source: 'submission_file', orgUnitId: COURSE_ID, assignmentId: folder.Id,
+          submissionId: attempt.Id, fileId: attempt.Files[0].FileId,
+        });
+        expect((out[0] as { text: string }).text).toMatch(/^File: /);
+        return;
+      }
+    }, 120_000);
+  });
 });
