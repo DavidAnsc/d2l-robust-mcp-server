@@ -104,19 +104,40 @@ export function htmlToText(html: string): string {
 }
 
 async function pdfText(data: Buffer): Promise<Extracted> {
-  const { extractText, getDocumentProxy } = await import('unpdf');
-  const pdf = await getDocumentProxy(new Uint8Array(data));
-  const { totalPages, text } = await extractText(pdf, { mergePages: false });
-  const pages = text as string[];
-  const body = pages.map((t, i) => `--- Page ${i + 1} ---\n${t.trim()}`).join('\n\n');
-  const chars = pages.reduce((n, t) => n + t.trim().length, 0);
-  return {
-    kind: 'pdf',
-    text: body,
-    parts: totalPages,
-    // Under ~20 characters a page usually means the pages are pictures (a scan).
-    note: chars < totalPages * 20 ? 'Little or no text found: this PDF is probably scanned images.' : undefined,
-  };
+  // The "legacy" build carries its own polyfills, so it runs on Node 20 as well as 22+.
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const pdf = await pdfjs.getDocument({
+    data: new Uint8Array(data),
+    useSystemFonts: false,
+    isEvalSupported: false,
+    disableFontFace: true,
+    verbosity: 0,
+  }).promise;
+  try {
+    const pages: string[] = [];
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const page = await pdf.getPage(n);
+      const content = await page.getTextContent();
+      let text = '';
+      for (const item of content.items) {
+        if (!('str' in item)) continue;
+        text += item.str + (item.hasEOL ? '\n' : '');
+      }
+      pages.push(text.replace(/[ \t]+\n/g, '\n').trim());
+      page.cleanup();
+    }
+    const body = pages.map((t, i) => `--- Page ${i + 1} ---\n${t}`).join('\n\n');
+    const chars = pages.reduce((n, t) => n + t.length, 0);
+    return {
+      kind: 'pdf',
+      text: body,
+      parts: pdf.numPages,
+      // Under ~20 characters a page usually means the pages are pictures (a scan).
+      note: chars < pdf.numPages * 20 ? 'Little or no text found: this PDF is probably scanned images.' : undefined,
+    };
+  } finally {
+    await pdf.destroy();
+  }
 }
 
 /** Number in a zip entry name like "ppt/slides/slide12.xml" (for sorting slides numerically). */

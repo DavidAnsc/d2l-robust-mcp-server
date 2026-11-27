@@ -190,7 +190,7 @@ src/
   auth.ts          saved browser session → API token
   session.ts       session state, SessionExpiredError, export-file format
   client.ts        read-only Brightspace API client (JSON and files)
-  extract.ts       file bytes → text (PDF, PPTX, DOCX, XLSX, HTML, text) or image
+  extract.ts       file bytes → text (PDF via pdfjs legacy build, PPTX, DOCX, XLSX, HTML, text) or image
   server.ts        builds the MCP server from the tool modules
   http.ts          streamable HTTP transport, token check, /health
   tools/           one module per area; each tool is { description, schema, handler }
