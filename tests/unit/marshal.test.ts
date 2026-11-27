@@ -153,6 +153,7 @@ describe('marshalAnnouncements', () => {
     const result = marshalAnnouncements(announcementsFixture as any);
     expect(result[1].attachments).toHaveLength(1);
     expect(result[1].attachments![0]).toEqual({
+      fileId: 55501,
       name: 'syllabus.pdf',
       size: '100.0 KB',
     });
@@ -229,6 +230,7 @@ describe('marshalAssignments', () => {
   it('includes attachments when present', () => {
     const result = marshalAssignments(assignmentsFixture as any);
     expect(result[1].attachments).toHaveLength(1);
+    expect(result[1].attachments![0].fileId).toBe(55502);
   });
 
   it('includes link attachments when present', () => {
@@ -268,9 +270,23 @@ describe('marshalSubmissions', () => {
     const result = marshalSubmissions(submissionsFixture as any);
     expect(result[0].files).toHaveLength(1);
     expect(result[0].files[0]).toEqual({
+      fileId: 3605044,
       name: 'TechnologyAnalysis.pdf',
       size: '1.9 MB',
     });
+  });
+
+  it('uses the newest attempt and lists earlier ones', () => {
+    const [s] = marshalSubmissions(submissionsFixture as any);
+    expect(s.submissionId).toBe(766506);
+    expect(s.earlierAttempts).toHaveLength(1);
+    expect(s.earlierAttempts![0]).toMatchObject({ submissionId: 766400, files: [{ fileId: 3604000, name: 'draft.pdf' }] });
+  });
+
+  it('includes feedback files and the entity needed to read them', () => {
+    const [s] = marshalSubmissions(submissionsFixture as any);
+    expect(s.feedbackFiles).toEqual([{ fileId: 3605100, name: 'marked-up.pdf', size: '200.0 KB' }]);
+    expect(s).toMatchObject({ entityType: 'user', entityId: 45760 });
   });
 
   it('includes submission comment when present', () => {

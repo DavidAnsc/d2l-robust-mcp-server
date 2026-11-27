@@ -12,9 +12,37 @@
       "Feedback": {
         "Text": "Excellent work on the analysis!",
         "Html": "<p>Excellent work on the analysis!</p>"
-      }
+      },
+      "Files": [
+        {
+          "FileId": 3605100,
+          "FileName": "marked-up.pdf",
+          "Size": 204800
+        }
+      ]
     },
     "Submissions": [
+      {
+        "Id": 766400,
+        "SubmittedBy": {
+          "Identifier": "45760",
+          "DisplayName": "Test User"
+        },
+        "SubmissionDate": "2025-11-20T09:00:00.000Z",
+        "Comment": {
+          "Text": ""
+        },
+        "Files": [
+          {
+            "IsRead": true,
+            "IsFlagged": false,
+            "IsDeleted": false,
+            "FileId": 3604000,
+            "FileName": "draft.pdf",
+            "Size": 1024
+          }
+        ]
+      },
       {
         "Id": 766506,
         "SubmittedBy": {

@@ -9,9 +9,14 @@ vi.mock('../../src/client.js', () => ({
   },
 }));
 
+vi.mock('../../src/auth.js', () => ({
+  importCookies: vi.fn(),
+}));
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { client as d2l } from '../../src/client.js';
+import { importCookies } from '../../src/auth.js';
 import { createHttpApp } from '../../src/http.js';
 import { markSessionExpired, resetSessionStatus, SessionExpiredError } from '../../src/session.js';
 import enrollmentsFixture from '../fixtures/enrollments.json';
@@ -87,7 +92,8 @@ describe('HTTP transport', () => {
     expect(names).toContain('get_upcoming_due_dates');
     expect(names).toContain('get_session_status');
     expect(names).not.toContain('download_file');
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(13);
+    expect(names).toContain('read_file');
     await c.close();
   });
 
@@ -139,5 +145,61 @@ describe('HTTP transport', () => {
     expect(res.status).toBe(200);
     expect(d2l.whoami).toHaveBeenCalledTimes(1);
     expect(await res.json()).toHaveProperty('message');
+  });
+});
+
+describe('POST /session (login pushed from a laptop)', () => {
+  let app: Server;
+  let base: string;
+  const auth = { Authorization: `Bearer ${TOKEN}` };
+  const session = (host = 'learn.example.edu') =>
+    JSON.stringify({ format: 'd2l-mcp-session', version: 1, host, exportedAt: '', cookies: [{ name: 'd2lSessionVal', value: 'x' }] });
+
+  beforeAll(async () => {
+    process.env.D2L_HOST = 'learn.example.edu';
+    app = createHttpApp({ host: '127.0.0.1', port: 0, token: TOKEN });
+    base = await listen(app);
+  });
+
+  afterAll(async () => {
+    delete process.env.D2L_HOST;
+    await new Promise((r) => app.close(r));
+  });
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('imports the cookies and reports the session valid', async () => {
+    vi.mocked(importCookies).mockResolvedValue(Date.UTC(2030, 0, 1));
+    const res = await fetch(`${base}/session`, { method: 'POST', headers: auth, body: session() });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ state: 'valid', cookies: 1, tokenExpiresAt: '2030-01-01T00:00:00.000Z' });
+    expect(importCookies).toHaveBeenCalledWith([{ name: 'd2lSessionVal', value: 'x' }]);
+  });
+
+  it('needs the token in the header, not the URL', async () => {
+    expect((await fetch(`${base}/session`, { method: 'POST', body: session() })).status).toBe(401);
+    expect((await fetch(`${base}/session/${TOKEN}`, { method: 'POST', body: session() })).status).toBe(404);
+    expect(importCookies).not.toHaveBeenCalled();
+  });
+
+  it('rejects a session for another school, or a body that is not an export', async () => {
+    const other = await fetch(`${base}/session`, { method: 'POST', headers: auth, body: session('other.edu') });
+    expect(other.status).toBe(400);
+    expect((await other.json()).error).toContain('other.edu');
+    expect((await fetch(`${base}/session`, { method: 'POST', headers: auth, body: '{"a":1}' })).status).toBe(400);
+    expect(importCookies).not.toHaveBeenCalled();
+  });
+
+  it('says so when the pushed cookies do not log in', async () => {
+    vi.mocked(importCookies).mockRejectedValue(new SessionExpiredError());
+    const res = await fetch(`${base}/session`, { method: 'POST', headers: auth, body: session() });
+    expect(res.status).toBe(422);
+  });
+
+  it('can be turned off', async () => {
+    const off = createHttpApp({ host: '127.0.0.1', port: 0, token: TOKEN, allowSessionPush: false });
+    const url = await listen(off);
+    expect((await fetch(`${url}/session`, { method: 'POST', headers: auth, body: session() })).status).toBe(403);
+    await new Promise((r) => off.close(r));
   });
 });

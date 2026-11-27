@@ -99,6 +99,7 @@ describe('httpConfig', () => {
       token: undefined,
       allowNoAuth: false,
       enableDownload: false,
+      allowSessionPush: true,
     });
   });
 

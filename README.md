@@ -2,7 +2,8 @@
 
 A read-only [Model Context Protocol](https://modelcontextprotocol.io) server for
 D2L Brightspace. It lets an AI assistant look up your courses, assignments, due dates, grades,
-announcements and course content.
+announcements and course content, and read the files in them: lecture slides, PDFs,
+assignment handouts, your own submissions and your instructors' feedback.
 
 It runs either as a local program (stdio, for Claude Desktop and similar apps) or as an HTTP
 server on an always-on machine such as a Raspberry Pi. In HTTP mode, remote clients and
@@ -81,13 +82,16 @@ URL, as the last part of the path (`/mcp/<token>`). The server refuses to start 
 token. In HTTP mode:
 
 - it never opens a login window: an expired login becomes a `SESSION_EXPIRED` error;
-- `download_file` is off unless `D2L_HTTP_ENABLE_DOWNLOAD=true`, because it writes to the
-  server's disk;
+- `read_file` works as usual (it writes nothing to disk); `download_file` is off unless
+  `D2L_HTTP_ENABLE_DOWNLOAD=true`, because it writes to the server's disk;
+- `POST /session` accepts a fresh login from `d2l-mcp-auth --push`, so a laptop can re-log the
+  server in from anywhere;
 - `GET /health` returns `{"state": "valid" | "expired" | "unknown"}` (HTTP 503 when expired),
   and `GET /health?check=true` with the token checks the login live.
 
-To run it on a Raspberry Pi behind Cloudflare Tunnel or Tailscale Funnel, with systemd units
-and a keep-alive timer, see **[docs/raspberry-pi.md](docs/raspberry-pi.md)**.
+To run it on a Raspberry Pi at home and use it from your laptop anywhere (Tailscale, systemd
+units, hourly keep-alive, expiry notifications, re-login with `--push`), see
+**[docs/raspberry-pi.md](docs/raspberry-pi.md)**.
 
 ## Tools
 
@@ -97,15 +101,22 @@ and a keep-alive timer, see **[docs/raspberry-pi.md](docs/raspberry-pi.md)**.
 | `get_upcoming_due_dates` | Calendar events and deadlines, by default 7 days back to 30 ahead |
 | `get_assignments` | Assignments with due dates and instructions |
 | `get_assignment` | Full details of one assignment |
-| `get_assignment_submissions` | Your submissions, feedback and grades for one assignment |
+| `get_assignment_submissions` | Your submissions (every attempt), feedback, feedback files and grade for one assignment |
 | `get_my_grades` | Your grade items, scores and feedback |
 | `get_announcements` | Course announcements |
 | `get_course_content` | The full course outline: modules and topics |
 | `get_course_modules` | Top-level course sections |
 | `get_course_module` | Everything inside one section |
 | `get_course_topic` | One topic or lecture item |
-| `download_file` | Downloads a course file, returning the text of `.docx` and plain-text files |
+| `read_file` | The contents of a file: content topics, assignment attachments, your submitted files, feedback files, announcement attachments |
+| `download_file` | Saves a course file to disk (stdio only by default) and returns its text |
 | `get_session_status` | Whether the saved login still works |
+
+`read_file` returns text from PDF (page by page), PowerPoint `.pptx` (slide by slide, with
+speaker notes), Word `.docx`, Excel `.xlsx` (every sheet), HTML and plain-text/code files, and
+returns PNG, JPEG, GIF and WebP images as images. Long files come in parts: the reply says
+which `offset` to ask for next. Scanned PDFs (pictures of pages) and old `.doc`/`.ppt`/`.xls`
+files have no extractable text; the reply says so.
 
 Course-scoped tools take an optional `orgUnitId`. Set `D2L_COURSE_ID` to use one course by
 default.
@@ -121,6 +132,7 @@ Relative dates ("today", "tomorrow", "in 3 days") count calendar days in that zo
 | `d2l-mcp-auth --status` | Checks the saved session without a window (exit code 0 valid, 2 expired) |
 | `d2l-mcp-auth --export <file>` | Writes the session's cookies to a file (permissions 600) |
 | `d2l-mcp-auth --import <file>` | Loads such a file into this machine's session |
+| `d2l-mcp-auth --push [url]` | Sends this machine's login to a `d2l-mcp --http` server (URL from `D2L_PUSH_URL`, token from `D2L_HTTP_TOKEN`) |
 
 API tokens last about an hour and are refreshed from the saved session automatically. The
 session itself ends after a period of inactivity that your school sets (often around a day).
@@ -130,8 +142,9 @@ When it has ended:
 - without one, tools fail with a message starting `SESSION_EXPIRED:` that says to run
   `d2l-mcp-auth`.
 
-To log a machine without a screen in, log in on a laptop, `--export`, copy the file over,
-`--import`, then delete both copies. The file is as good as your password until the session
+To log a machine without a screen in, run `d2l-mcp-auth --push https://that-server` on a
+laptop. Or, without HTTP: log in on a laptop, `--export`, copy the file over, `--import`, then
+delete both copies. The file is as good as your password until the session
 ends. Export and import move cookies, not the browser folder, because the browser encrypts its
 cookie store with a key tied to the operating system.
 
@@ -151,8 +164,14 @@ cookie store with a key tied to the operating system.
 | `D2L_HTTP_TOKEN` | none, required | Shared secret for `/mcp` |
 | `D2L_HTTP_ALLOW_NO_AUTH` | `false` | Start without a token (only behind something that authenticates) |
 | `D2L_HTTP_ENABLE_DOWNLOAD` | `false` | Offer `download_file` over HTTP |
+| `D2L_HTTP_ALLOW_SESSION_PUSH` | `true` | Accept `d2l-mcp-auth --push` at `POST /session` |
+| `D2L_NOTIFY_URL` | none | POST a message here when the login expires (e.g. `https://ntfy.sh/<topic>`) |
+| `D2L_MAX_FILE_MB` | `50` | Largest file `read_file` will fetch |
+| `D2L_BROWSER_PATH` | Playwright's Chromium | Another Chromium to use, e.g. `/usr/bin/chromium` |
+| `D2L_PUSH_URL` | none | Default server for `d2l-mcp-auth --push` |
 
-`download_file` only fetches `https://` URLs on `D2L_HOST` or its subdomains.
+`read_file` (with `source: "url"`) and `download_file` only fetch `https://` URLs on `D2L_HOST`
+or its subdomains.
 
 ## Development
 
@@ -170,7 +189,8 @@ src/
   config.ts        every environment setting
   auth.ts          saved browser session → API token
   session.ts       session state, SessionExpiredError, export-file format
-  client.ts        read-only Brightspace API client
+  client.ts        read-only Brightspace API client (JSON and files)
+  extract.ts       file bytes → text (PDF, PPTX, DOCX, XLSX, HTML, text) or image
   server.ts        builds the MCP server from the tool modules
   http.ts          streamable HTTP transport, token check, /health
   tools/           one module per area; each tool is { description, schema, handler }
@@ -183,6 +203,10 @@ add the client call it needs, and spread the module into `readOnlyTools` in `src
 ## What changed from upstream
 
 - **Added:**
+  - `read_file`: contents of course files, attachments, your submissions and feedback files
+  - every submission attempt, with the file IDs needed to open them
+  - `d2l-mcp-auth --push` and `POST /session`: re-log a server in from a laptop
+  - `D2L_NOTIFY_URL`: a notification when the login expires
   - HTTP transport, token auth and `/health`
   - headless-only mode with `SESSION_EXPIRED` errors
   - the `get_session_status` tool

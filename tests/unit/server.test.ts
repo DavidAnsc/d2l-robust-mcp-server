@@ -30,6 +30,11 @@ describe('errorResult', () => {
   it('passes other errors through', () => {
     expect(textOf(errorResult(new Error('boom')))).toBe('Error: boom');
   });
+
+  it('drops Playwright call logs and colour codes', () => {
+    const e = new Error('page.goto: net::ERR_FAILED at https://x/d2l/home\nCall log:\n\u001b[2m  - navigating\u001b[22m');
+    expect(textOf(errorResult(e))).toBe('Error: page.goto: net::ERR_FAILED at https://x/d2l/home');
+  });
 });
 
 describe('createServer', () => {
@@ -42,7 +47,7 @@ describe('createServer', () => {
     const c = await connected();
     const names = (await c.listTools()).tools.map((t) => t.name);
     expect(names).toContain('download_file');
-    expect(names).toHaveLength(13);
+    expect(names).toHaveLength(14);
   });
 
   it('can leave download_file out', async () => {
