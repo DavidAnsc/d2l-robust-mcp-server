@@ -1,2 +1,10 @@
 /node_modules
 /dist
+
+# Secrets and login state: never commit these
+.env
+.env.*
+!.env.example
+.d2l-session/
+d2l-session*.json
+*.session.json

@@ -1,4 +1,5 @@
-import { getToken } from './auth.js';
+import { getToken, clearTokenCache, getTokenExpiry } from './auth.js';
+import { markSessionExpired, markSessionValid, SessionExpiredError } from './session.js';
 
 const D2L_HOST = process.env.D2L_HOST || 'learn.ul.ie';
 const BASE_URL = `https://${D2L_HOST}`;
@@ -15,8 +16,32 @@ export class D2LClient {
     path: string,
     body?: unknown
   ): Promise<ApiResponse<T>> {
+    let response = await this.send(method, path, body);
+
+    // 401 = the cached token went stale before its hour was up. Get a fresh one
+    // from the browser session once; if that still fails, the session itself is gone.
+    if (response.status === 401) {
+      clearTokenCache();
+      response = await this.send(method, path, body);
+      if (response.status === 401) {
+        markSessionExpired();
+        throw new SessionExpiredError();
+      }
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`D2L API error ${response.status}: ${errorText}`);
+    }
+
+    markSessionValid(getTokenExpiry());
+    const data = await response.json() as T;
+    return { data, status: response.status };
+  }
+
+  private async send(method: string, path: string, body?: unknown): Promise<Response> {
     const token = await getToken();
-    
+
     const url = `${BASE_URL}${path}`;
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${token}`,
@@ -32,15 +57,7 @@ export class D2LClient {
       options.body = JSON.stringify(body);
     }
 
-    const response = await fetch(url, options);
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`D2L API error ${response.status}: ${errorText}`);
-    }
-
-    const data = await response.json() as T;
-    return { data, status: response.status };
+    return fetch(url, options);
   }
 
   async get<T>(path: string): Promise<T> {

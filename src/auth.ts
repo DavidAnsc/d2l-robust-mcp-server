@@ -1,9 +1,14 @@
 import { chromium, BrowserContext } from 'playwright';
-import { homedir } from 'os';
-import { join } from 'path';
 import { existsSync } from 'fs';
+import {
+  getSessionPath,
+  isHeadlessOnly,
+  markSessionExpired,
+  markSessionValid,
+  SessionExpiredError,
+} from './session.js';
 
-const SESSION_PATH = join(homedir(), '.d2l-session');
+const SESSION_PATH = getSessionPath();
 const D2L_HOST = process.env.D2L_HOST || 'learn.ul.ie';
 const HOME_URL = `https://${D2L_HOST}/d2l/home`;
 
@@ -18,13 +23,31 @@ function isLoginPage(url: string): boolean {
   return url.includes('login') || url.includes('microsoftonline') || url.includes('sso') || url.includes('adfs');
 }
 
+let inFlight: Promise<string> | null = null;
+
 export async function getToken(): Promise<string> {
   // Return cached token if still valid (with 5 min buffer)
   if (tokenCache.token && Date.now() < tokenCache.expiresAt - 300000) {
     return tokenCache.token;
   }
 
+  // Several tool calls can arrive at once; launch at most one browser for them.
+  if (!inFlight) {
+    inFlight = fetchToken().finally(() => {
+      inFlight = null;
+    });
+  }
+  return inFlight;
+}
+
+async function fetchToken(): Promise<string> {
   const hasExistingSession = existsSync(SESSION_PATH);
+  const headlessOnly = isHeadlessOnly();
+
+  if (!hasExistingSession && headlessOnly) {
+    markSessionExpired();
+    throw new SessionExpiredError();
+  }
 
   // Always try headless first if session exists - only show browser if login needed
   let context = await chromium.launchPersistentContext(SESSION_PATH, {
@@ -34,31 +57,36 @@ export async function getToken(): Promise<string> {
 
   try {
     const result = await captureToken(context, hasExistingSession);
-    
+
     // If we need to login and were running headless, restart with headed browser
     if (result.needsLogin && hasExistingSession) {
       await context.close();
+      if (headlessOnly) {
+        markSessionExpired();
+        throw new SessionExpiredError();
+      }
       console.error('Session expired, opening browser for login...');
       context = await chromium.launchPersistentContext(SESSION_PATH, {
         headless: false,
         viewport: { width: 1280, height: 720 },
       });
       const retryResult = await captureToken(context, false);
-      tokenCache = {
-        token: retryResult.token,
-        expiresAt: Date.now() + 3600000,
-      };
-      return retryResult.token;
+      return cacheToken(retryResult.token);
     }
 
-    tokenCache = {
-      token: result.token,
-      expiresAt: Date.now() + 3600000, // 1 hour
-    };
-    return result.token;
+    return cacheToken(result.token);
   } finally {
     await context.close();
   }
+}
+
+function cacheToken(token: string): string {
+  tokenCache = {
+    token,
+    expiresAt: Date.now() + 3600000, // 1 hour
+  };
+  markSessionValid(tokenCache.expiresAt);
+  return token;
 }
 
 async function captureToken(context: BrowserContext, quickCheck: boolean): Promise<{ token: string; needsLogin: boolean }> {
@@ -154,6 +182,12 @@ export function getTokenExpiry(): number {
 
 export async function getAuthenticatedContext(): Promise<BrowserContext> {
   const hasExistingSession = existsSync(SESSION_PATH);
+  const headlessOnly = isHeadlessOnly();
+
+  if (!hasExistingSession && headlessOnly) {
+    markSessionExpired();
+    throw new SessionExpiredError();
+  }
 
   let context = await chromium.launchPersistentContext(SESSION_PATH, {
     headless: hasExistingSession,
@@ -179,6 +213,10 @@ export async function getAuthenticatedContext(): Promise<BrowserContext> {
       // If headless failed to auto-login, restart with visible browser
       if (hasExistingSession) {
         await context.close();
+        if (headlessOnly) {
+          markSessionExpired();
+          throw new SessionExpiredError();
+        }
         console.error('Session expired, opening browser for login...');
         context = await chromium.launchPersistentContext(SESSION_PATH, {
           headless: false,

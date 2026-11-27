@@ -29,12 +29,44 @@ async function extractContent(data: Buffer, ext: string): Promise<string | null>
   return null;
 }
 
+/**
+ * Only fetch from the configured Brightspace host (or its subdomains). The request runs
+ * with the logged-in browser's cookies, so an arbitrary URL would let a caller make this
+ * machine fetch other sites or local-network addresses.
+ */
+export function resolveD2LUrl(url: string, host: string = D2L_HOST): URL {
+  const full = new URL(url.startsWith('http') ? url : `https://${host}${url.startsWith('/') ? '' : '/'}${url}`);
+  const h = full.hostname.toLowerCase();
+  const allowed = host.toLowerCase();
+  if (full.protocol !== 'https:' || (h !== allowed && !h.endsWith(`.${allowed}`))) {
+    throw new Error(`Refusing to download from ${full.origin}: only https://${host} URLs are allowed.`);
+  }
+  return full;
+}
+
+/**
+ * When D2L_DOWNLOAD_DIR is set, every file lands inside it and savePath must stay inside it too.
+ * Returns the directory to use, or undefined for the old behaviour (savePath, else ~/Downloads).
+ */
+export function resolveDownloadDir(savePath: string | undefined, root: string | undefined = process.env.D2L_DOWNLOAD_DIR): { dir?: string; file?: string } {
+  if (!root) return {};
+  const base = path.resolve(root);
+  if (!savePath) return { dir: base };
+  const target = path.resolve(base, savePath);
+  if (target !== base && !target.startsWith(base + path.sep)) {
+    throw new Error(`savePath must be inside ${base}`);
+  }
+  if (fs.existsSync(target) && fs.statSync(target).isDirectory()) return { dir: target };
+  return { dir: path.dirname(target), file: target };
+}
+
 export async function downloadFile(url: string, savePath?: string) {
-  // Ensure full URL
-  const fullUrl = url.startsWith('http') ? url : `https://${D2L_HOST}${url}`;
-  
+  const parsedUrl = resolveD2LUrl(url);
+  const fullUrl = parsedUrl.toString();
+  const restricted = resolveDownloadDir(savePath);
+
   // Extract filename from URL
-  const urlPath = new URL(fullUrl).pathname;
+  const urlPath = parsedUrl.pathname;
   const pathParts = urlPath.split('/');
   const urlFilename = decodeURIComponent(pathParts[pathParts.length - 1] || 'download');
 
@@ -66,11 +98,14 @@ export async function downloadFile(url: string, savePath?: string) {
     }
     
     // Determine where to save
-    const downloadsDir = savePath && fs.existsSync(savePath) && fs.statSync(savePath).isDirectory()
+    if (restricted.dir) fs.mkdirSync(restricted.dir, { recursive: true });
+    const downloadsDir = restricted.dir ? restricted.dir : savePath && fs.existsSync(savePath) && fs.statSync(savePath).isDirectory()
       ? savePath
       : path.join(os.homedir(), 'Downloads');
     
-    let finalPath = savePath && fs.existsSync(savePath) && !fs.statSync(savePath).isDirectory()
+    let finalPath = restricted.dir
+      ? (restricted.file ?? path.join(restricted.dir, path.basename(filename)))
+      : savePath && fs.existsSync(savePath) && !fs.statSync(savePath).isDirectory()
       ? savePath
       : path.join(downloadsDir, filename);
 
