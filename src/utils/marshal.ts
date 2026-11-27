@@ -1,3 +1,5 @@
+import { displayTimeZone } from '../config.js';
+
 // Utility functions for marshalling D2L API responses to LLM-friendly formats
 
 // Strip HTML tags and decode entities
@@ -16,27 +18,49 @@ export function stripHtml(html: string | null | undefined): string {
     .trim();
 }
 
-// Format date to readable string
-export function formatDate(isoDate: string | null | undefined): string | null {
+/**
+ * A readable date with its time zone named, e.g. "Mon, Nov 24, 2025, 5:00 PM GMT".
+ * Shown in D2L_TIMEZONE if set, else the machine's zone. The zone is always printed,
+ * because on a server the machine's zone is often UTC rather than the student's.
+ */
+export function formatDate(isoDate: string | null | undefined, timeZone: string | undefined = displayTimeZone()): string | null {
   if (!isoDate) return null;
   const date = new Date(isoDate);
-  return date.toLocaleDateString('en-US', {
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString('en-US', {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
+    timeZone,
+    timeZoneName: 'short',
   });
 }
 
-// Format date relative to now
-export function formatRelativeDate(isoDate: string | null | undefined): string | null {
+/** Days since 1970 for the calendar date `date` falls on in `timeZone`. */
+function calendarDay(date: Date, timeZone: string | undefined): number {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(date);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  return Date.UTC(get('year'), get('month') - 1, get('day')) / 86_400_000;
+}
+
+/**
+ * "today", "tomorrow", "in 3 days", "2 days ago", … by calendar day in the display zone,
+ * so something due at 23:59 tonight is "today" whatever the time now. Beyond a week,
+ * the full date.
+ */
+export function formatRelativeDate(
+  isoDate: string | null | undefined,
+  now: Date = new Date(),
+  timeZone: string | undefined = displayTimeZone()
+): string | null {
   if (!isoDate) return null;
   const date = new Date(isoDate);
-  const now = new Date();
-  const diffMs = date.getTime() - now.getTime();
-  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+  if (Number.isNaN(date.getTime())) return null;
+  const diffDays = calendarDay(date, timeZone) - calendarDay(now, timeZone);
 
   if (diffDays === 0) return 'today';
   if (diffDays === 1) return 'tomorrow';
@@ -44,7 +68,7 @@ export function formatRelativeDate(isoDate: string | null | undefined): string |
   if (diffDays > 0 && diffDays <= 7) return `in ${diffDays} days`;
   if (diffDays < 0 && diffDays >= -7) return `${Math.abs(diffDays)} days ago`;
 
-  return formatDate(isoDate);
+  return formatDate(isoDate, timeZone);
 }
 
 // Format file size
