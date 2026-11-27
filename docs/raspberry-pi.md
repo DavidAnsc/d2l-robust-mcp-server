@@ -29,11 +29,20 @@ Raspberry Pi 4 or 5, 2 GB RAM or more, 64-bit Raspberry Pi OS Lite (Bookworm or 
 curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-sudo npm install -g d2l-mcp-server
-sudo npx playwright install-deps chromium   # system libraries Chromium needs
+# As the user the service will run as (here: pi), not root
+git clone https://github.com/DavidAnsc/d2l-robust-mcp-server.git ~/d2l-robust-mcp-server
+cd ~/d2l-robust-mcp-server
+npm ci                                       # also builds, and downloads Chromium for this user
+sudo npx playwright install-deps chromium    # system libraries Chromium needs
 ```
 
-Playwright ships a Linux ARM64 Chromium, so no separate browser install is needed.
+Install as the service user, not with `sudo npm install -g`: Playwright downloads Chromium into
+the installing user's home (`~/.cache/ms-playwright`), so a root install leaves the service
+user without a browser. Playwright ships a Linux ARM64 Chromium, so no separate browser
+install is needed.
+
+Below, `d2l-mcp-auth` means `node ~/d2l-robust-mcp-server/dist/auth-cli.js` (or run
+`npm link` once in the clone to get both commands on your PATH).
 
 ## 2. Get a login onto the Pi
 
@@ -41,7 +50,7 @@ The Pi has no screen, so `d2l-mcp-auth` cannot open a login window there. Log in
 and move the session over:
 
 ```bash
-# On the laptop (with D2L_HOST set to your school's host)
+# On the laptop (with this project installed and D2L_HOST set to your school's host)
 d2l-mcp-auth
 d2l-mcp-auth --export d2l-session.json
 scp d2l-session.json pi@raspberrypi.local:
@@ -69,17 +78,20 @@ there.
 ## 3. Run it as a service
 
 ```bash
+cd ~/d2l-robust-mcp-server
 sudo cp deploy/systemd/d2l-mcp.service deploy/systemd/d2l-mcp-keepalive.* /etc/systemd/system/
 sudo cp deploy/systemd/d2l-mcp.env.example /etc/d2l-mcp.env
 sudo chmod 600 /etc/d2l-mcp.env
 sudo nano /etc/d2l-mcp.env                 # set D2L_HOST and D2L_HTTP_TOKEN (openssl rand -hex 32)
-sudo systemctl edit d2l-mcp.service        # only if your user is not "pi" ([Service] User=...)
+sudo systemctl edit d2l-mcp.service        # only if your user is not "pi": set User= and the ExecStart= path
 sudo systemctl daemon-reload
 sudo systemctl enable --now d2l-mcp.service d2l-mcp-keepalive.timer
 journalctl -u d2l-mcp -f
 ```
 
-- `d2l-mcp.service` runs `d2l-mcp --http` on `127.0.0.1:3000` and restarts it on failure.
+- `d2l-mcp.service` runs the server with `--http` on `127.0.0.1:3000` and restarts it on failure.
+- Set `D2L_TIMEZONE` (for example `America/Toronto`) in `/etc/d2l-mcp.env`. A Pi is often set
+  to UTC, and dates in tool output use the server's zone unless you set this.
 - `d2l-mcp-keepalive.timer` calls `/health?check=true` every 3 hours. Once the cached API token
   is over an hour old, that check opens the saved browser session headlessly, which keeps the
   session in use. Whether this stretches your school's sign-in beyond its own limits depends on
@@ -134,3 +146,4 @@ same state on demand. To fix it, repeat step 2.
 | `D2L_DOWNLOAD_DIR` | none | When set, `download_file` only writes inside this folder |
 | `D2L_HEADLESS` | `true` in HTTP mode | Never open a visible browser window |
 | `D2L_SESSION_PATH` | `~/.d2l-session` | Where the browser session is stored |
+| `D2L_TIMEZONE` | the machine's zone | Time zone for dates in tool output |
