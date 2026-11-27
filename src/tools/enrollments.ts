@@ -1,4 +1,5 @@
 import { client } from '../client.js';
+import { toJson } from './common.js';
 import { marshalEnrollments, RawEnrollment } from '../utils/marshal.js';
 
 export const enrollmentTools = {
@@ -7,7 +8,7 @@ export const enrollmentTools = {
     schema: {},
     handler: async (): Promise<string> => {
       const enrollments = await client.getMyEnrollments() as { Items: RawEnrollment[] };
-      return JSON.stringify(marshalEnrollments(enrollments), null, 2);
+      return toJson(marshalEnrollments(enrollments));
     },
   },
 };

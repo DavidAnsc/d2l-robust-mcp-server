@@ -1,0 +1,13 @@
+# Asks the server to check the session now. When the cached API token is older than an hour,
+# this opens the saved browser session headlessly, which is what keeps it from going idle.
+# Fails (non-zero) when the session has expired, so `systemctl status` / journald show it.
+[Unit]
+Description=Keep the D2L MCP login session in use
+After=d2l-mcp.service
+Requires=d2l-mcp.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/d2l-mcp.env
+# Change 3000 if you set D2L_HTTP_PORT.
+ExecStart=/usr/bin/curl -fsS --max-time 120 -H "Authorization: Bearer ${D2L_HTTP_TOKEN}" "http://127.0.0.1:3000/health?check=true"

@@ -1,0 +1,31 @@
+# D2L MCP server over HTTP, bound to 127.0.0.1. Put a tunnel (cloudflared / tailscale funnel) in front.
+#
+# Install:
+#   sudo cp deploy/systemd/d2l-mcp.* /etc/systemd/system/
+#   sudo cp deploy/systemd/d2l-mcp.env.example /etc/d2l-mcp.env && sudo chmod 600 /etc/d2l-mcp.env
+#   sudo systemctl edit d2l-mcp.service   # set User= and, if needed, ExecStart= (see below)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now d2l-mcp.service d2l-mcp-keepalive.timer
+[Unit]
+Description=D2L Brightspace MCP server (HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The user whose ~/.d2l-session holds the login (the one that ran d2l-mcp-auth / --import).
+User=pi
+EnvironmentFile=/etc/d2l-mcp.env
+Environment=D2L_TRANSPORT=http
+Environment=NODE_ENV=production
+# Built from a clone in the service user's home (see docs/raspberry-pi.md). Adjust the path if yours differs.
+ExecStart=/usr/bin/node /home/pi/d2l-robust-mcp-server/dist/index.js --http
+Restart=on-failure
+RestartSec=10
+# Session files and anything the server creates: owner-only.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
