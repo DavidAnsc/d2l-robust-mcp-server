@@ -42,6 +42,13 @@ npm ci          # installs, builds, and downloads Chromium
 npm link        # puts d2l-mcp and d2l-mcp-auth on your PATH
 ```
 
+On a Mac with Google Chrome in `/Applications`, the server uses that Chrome and `npm ci`
+downloads no browser. Everywhere else, `npm ci` downloads Playwright's Chromium (about
+250 MB in two parts). After each part reaches 100% it unpacks with no progress shown, which
+can take a few minutes. If the download fails, the rest of the install still finishes and
+prints how to fix it. To use another browser, set `D2L_BROWSER_PATH` (see
+[Configuration](#configuration)) both when installing and when running.
+
 ## Quick start (Claude Desktop)
 
 1. Log in once. A browser window opens; sign in to Brightspace as usual.
@@ -68,7 +75,8 @@ npm link        # puts d2l-mcp and d2l-mcp-auth on your PATH
 3. Restart Claude Desktop and ask "What's due this week?"
 
 `D2L_HOST` is the address you see in the browser when you use Brightspace, without
-`https://`. If you leave it unset, it defaults to `learn.ul.ie` (the original project's school).
+`https://`. Once you have logged in, later commands without `D2L_HOST` use the host of that
+login; with no login and no `D2L_HOST`, it defaults to `learn.ul.ie` (the original project's school).
 
 ## Remote use (HTTP)
 
@@ -148,14 +156,47 @@ delete both copies. The file is as good as your password until the session
 ends. Export and import move cookies, not the browser folder, because the browser encrypts its
 cookie store with a key tied to the operating system.
 
+### Automatic login
+
+If your school signs students in with Microsoft (a "Login" image or button on the D2L login
+page that leads to `login.microsoftonline.com`), the server can sign in again by itself when
+the session ends. Set:
+
+```bash
+D2L_USERNAME=12345abc@yourboard.ca
+D2L_PASSWORD=your-password          # or D2L_PASSWORD_FILE=/path/to/file-with-just-the-password
+```
+
+It follows the Microsoft link on the login page, enters the email and password, answers
+"Stay signed in?" with Yes, and carries on. It stops with a `SESSION_EXPIRED:` message instead
+when Microsoft:
+
+- rejects the email or password. It then won't try them again until the server restarts, so it
+  can't lock your account by retrying;
+- asks for two-step verification (a code, or approving on your phone). Run `d2l-mcp-auth` and
+  do that step yourself;
+- shows a page it doesn't recognise.
+
+Your password sits in plain text wherever you put it, and it unlocks your whole school
+account, not just Brightspace. Keep that file owner-only (`chmod 600`), and check your
+school allows automated sign-in.
+
+### Cookies kept between runs
+
+Brightspace's login cookies are often *session cookies*, which the browser deletes when it
+closes. So the login also keeps a copy of its cookies in `~/.d2l-session/d2l-mcp-cookies.json`
+(permissions 600, same sensitivity as the folder) and puts back any the browser dropped.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `D2L_HOST` | `learn.ul.ie` | Your Brightspace host |
+| `D2L_HOST` | host of the saved login, else `learn.ul.ie` | Your Brightspace host |
 | `D2L_COURSE_ID` | none | Default course for tools called without `orgUnitId` |
 | `D2L_TIMEZONE` | machine's zone | IANA time zone for dates, e.g. `America/Toronto` |
 | `D2L_SESSION_PATH` | `~/.d2l-session` | Where the browser login is stored |
+| `D2L_USERNAME` | none | School (Microsoft) account for [automatic login](#automatic-login) |
+| `D2L_PASSWORD` / `D2L_PASSWORD_FILE` | none | Its password, or a file holding only the password |
 | `D2L_HEADLESS` | `true` on Linux without a display and in HTTP mode | Never open a login window |
 | `D2L_DOWNLOAD_DIR` | none | If set, `download_file` only writes inside this folder |
 | `D2L_TRANSPORT` | `stdio` | `http` is the same as `--http` |
@@ -167,7 +208,7 @@ cookie store with a key tied to the operating system.
 | `D2L_HTTP_ALLOW_SESSION_PUSH` | `true` | Accept `d2l-mcp-auth --push` at `POST /session` |
 | `D2L_NOTIFY_URL` | none | POST a message here when the login expires (e.g. `https://ntfy.sh/<topic>`) |
 | `D2L_MAX_FILE_MB` | `50` | Largest file `read_file` will fetch |
-| `D2L_BROWSER_PATH` | Playwright's Chromium | Another Chromium to use, e.g. `/usr/bin/chromium` |
+| `D2L_BROWSER_PATH` | Google Chrome in `/Applications` on macOS if installed, else Playwright's Chromium | Another Chrome or Chromium to use, e.g. `/usr/bin/chromium`; `playwright` forces Playwright's Chromium |
 | `D2L_PUSH_URL` | none | Default server for `d2l-mcp-auth --push` |
 
 `read_file` (with `source: "url"`) and `download_file` only fetch `https://` URLs on `D2L_HOST`
