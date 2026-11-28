@@ -196,7 +196,7 @@ both copies.
 | `D2L_HTTP_ENABLE_DOWNLOAD` | `false` | Expose `download_file`, which writes files on the Pi |
 | `D2L_NOTIFY_URL` | none | POST a message here when the login expires (e.g. an ntfy.sh topic) |
 | `D2L_MAX_FILE_MB` | `50` | Largest file `read_file` will fetch |
-| `D2L_BROWSER_PATH` | Playwright's Chromium | Another Chromium to use, e.g. `/usr/bin/chromium` |
+| `D2L_BROWSER_PATH` | Google Chrome in `/Applications` on macOS if installed, else Playwright's Chromium | Another Chrome or Chromium to use, e.g. `/usr/bin/chromium`; `playwright` forces Playwright's Chromium |
 | `D2L_DOWNLOAD_DIR` | none | When set, `download_file` only writes inside this folder |
 | `D2L_HEADLESS` | `true` in HTTP mode | Never open a visible browser window |
 | `D2L_SESSION_PATH` | `~/.d2l-session` | Where the browser session is stored |

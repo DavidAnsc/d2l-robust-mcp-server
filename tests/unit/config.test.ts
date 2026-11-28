@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
+  browserPath,
   d2lBaseUrl,
   d2lHost,
   defaultCourseId,
@@ -116,5 +117,34 @@ describe('httpConfig', () => {
   it('rejects a bad port', () => {
     expect(() => httpConfig({ D2L_HTTP_PORT: 'abc' })).toThrow(/D2L_HTTP_PORT/);
     expect(() => httpConfig({ D2L_HTTP_PORT: '70000' })).toThrow(/D2L_HTTP_PORT/);
+  });
+});
+
+describe('browserPath', () => {
+  const MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  const yes = () => true;
+  const no = () => false;
+
+  it('uses Google Chrome on macOS when it is installed', () => {
+    delete process.env.D2L_BROWSER_PATH;
+    expect(browserPath('darwin', yes)).toBe(MAC_CHROME);
+  });
+
+  it("falls back to Playwright's Chromium when Chrome is not there", () => {
+    delete process.env.D2L_BROWSER_PATH;
+    expect(browserPath('darwin', no)).toBeUndefined();
+  });
+
+  it('has no default on other platforms', () => {
+    delete process.env.D2L_BROWSER_PATH;
+    expect(browserPath('linux', yes)).toBeUndefined();
+    expect(browserPath('win32', yes)).toBeUndefined();
+  });
+
+  it('prefers D2L_BROWSER_PATH, and "playwright" forces the bundled Chromium', () => {
+    process.env.D2L_BROWSER_PATH = '/usr/bin/chromium';
+    expect(browserPath('darwin', yes)).toBe('/usr/bin/chromium');
+    process.env.D2L_BROWSER_PATH = 'playwright';
+    expect(browserPath('darwin', yes)).toBeUndefined();
   });
 });

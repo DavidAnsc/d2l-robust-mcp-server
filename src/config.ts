@@ -1,3 +1,4 @@
+import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -117,12 +118,31 @@ export function notifyUrl(): string | undefined {
   return process.env.D2L_NOTIFY_URL || undefined;
 }
 
+/** Where Google Chrome is installed by default, per platform. Used when it exists. */
+export const SYSTEM_CHROME: Partial<Record<NodeJS.Platform, string>> = {
+  darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+};
+
 /**
- * Options for launching the browser: D2L_BROWSER_PATH points at a Chromium to use instead of
- * the one Playwright downloaded (for example /usr/bin/chromium on Raspberry Pi OS).
+ * Which browser binary to launch, or undefined for the Chromium Playwright downloaded:
+ *  1. D2L_BROWSER_PATH, if set (D2L_BROWSER_PATH=playwright forces Playwright's own);
+ *  2. else Google Chrome at its default location, if it is installed there (macOS);
+ *  3. else Playwright's Chromium.
  */
+export function browserPath(
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync
+): string | undefined {
+  const configured = process.env.D2L_BROWSER_PATH;
+  if (configured) return configured.toLowerCase() === 'playwright' ? undefined : configured;
+  const chrome = SYSTEM_CHROME[platform];
+  return chrome && exists(chrome) ? chrome : undefined;
+}
+
+/** Options for launching the browser (see browserPath). */
 export function browserLaunchOptions(): { executablePath?: string } {
-  return process.env.D2L_BROWSER_PATH ? { executablePath: process.env.D2L_BROWSER_PATH } : {};
+  const path = browserPath();
+  return path ? { executablePath: path } : {};
 }
 
 /** Largest file read_file will fetch, in bytes (D2L_MAX_FILE_MB, default 50). */

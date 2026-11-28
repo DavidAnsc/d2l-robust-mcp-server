@@ -56,10 +56,10 @@ export async function launchProfile(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/Executable doesn't exist|Failed to launch.*(ENOENT|no such file)/is.test(message)) {
-      const custom = process.env.D2L_BROWSER_PATH;
+      const custom = browserLaunchOptions().executablePath;
       throw new Error(
         custom
-          ? `No browser at D2L_BROWSER_PATH=${custom}. Point it at a Chrome or Chromium that exists.`
+          ? `No browser at ${custom}. Set D2L_BROWSER_PATH to a Chrome or Chromium that exists.`
           : 'No browser installed for logging in to Brightspace. Run `npx playwright install chromium` ' +
             'in the d2l-robust-mcp-server folder, or set D2L_BROWSER_PATH to a Chrome you already have ' +
             '(on a Mac: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").'

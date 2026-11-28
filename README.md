@@ -42,16 +42,12 @@ npm ci          # installs, builds, and downloads Chromium
 npm link        # puts d2l-mcp and d2l-mcp-auth on your PATH
 ```
 
-`npm ci` downloads Playwright's Chromium (about 250 MB in two parts). After each part
-reaches 100% it unpacks with no progress shown, which can take a few minutes. If the
-download fails, the rest of the install still finishes and prints how to fix it. To skip the
-download and use a Chrome you already have, install with `D2L_BROWSER_PATH` set, and keep it
-set when you run `d2l-mcp` and `d2l-mcp-auth`:
-
-```bash
-export D2L_BROWSER_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # macOS
-npm ci
-```
+On a Mac with Google Chrome in `/Applications`, the server uses that Chrome and `npm ci`
+downloads no browser. Everywhere else, `npm ci` downloads Playwright's Chromium (about
+250 MB in two parts). After each part reaches 100% it unpacks with no progress shown, which
+can take a few minutes. If the download fails, the rest of the install still finishes and
+prints how to fix it. To use another browser, set `D2L_BROWSER_PATH` (see
+[Configuration](#configuration)) both when installing and when running.
 
 ## Quick start (Claude Desktop)
 
@@ -178,7 +174,7 @@ cookie store with a key tied to the operating system.
 | `D2L_HTTP_ALLOW_SESSION_PUSH` | `true` | Accept `d2l-mcp-auth --push` at `POST /session` |
 | `D2L_NOTIFY_URL` | none | POST a message here when the login expires (e.g. `https://ntfy.sh/<topic>`) |
 | `D2L_MAX_FILE_MB` | `50` | Largest file `read_file` will fetch |
-| `D2L_BROWSER_PATH` | Playwright's Chromium | Another Chromium to use, e.g. `/usr/bin/chromium` |
+| `D2L_BROWSER_PATH` | Google Chrome in `/Applications` on macOS if installed, else Playwright's Chromium | Another Chrome or Chromium to use, e.g. `/usr/bin/chromium`; `playwright` forces Playwright's Chromium |
 | `D2L_PUSH_URL` | none | Default server for `d2l-mcp-auth --push` |
 
 `read_file` (with `source: "url"`) and `download_file` only fetch `https://` URLs on `D2L_HOST`
