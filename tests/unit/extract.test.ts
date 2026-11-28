@@ -57,10 +57,10 @@ describe('extractFile', () => {
     expect(r.text).toMatch(/^Could not read bad\.pdf as pdf/);
   });
 
-  it('says old Office formats are not readable', async () => {
+  it('says when an old Office file cannot be read (here: not a real .ppt, so conversion fails)', async () => {
     const r = await extractFile(Buffer.from([0xd0, 0xcf, 0x11, 0xe0]), 'old.ppt');
     expect(r.kind).toBe('unsupported');
-    expect(r.text).toContain('.pptx');
+    expect(r.text).toMatch(/LibreOffice.*pptx or PDF/);
   });
 });
 
@@ -96,5 +96,50 @@ describe('sliceText', () => {
       offset = next;
     }
     expect(joined).toBe(text);
+  });
+});
+
+describe('additions: images in HTML, zip contents, page ranges', async () => {
+  const { htmlToText, parsePageRange } = await import('../../src/extract.js');
+  const JSZip = (await import('jszip')).default;
+
+  it('keeps image alt text and address, but not data URIs', () => {
+    expect(htmlToText('<p>See <img src="/content/x/fig1.png" alt="Circuit diagram"></p>')).toBe('See [Image: Circuit diagram (/content/x/fig1.png)]');
+    expect(htmlToText('<img alt="Logo" src="data:image/png;base64,AAAA">')).toBe('[Image: Logo]');
+  });
+
+  it('reads the text of files inside a zip', async () => {
+    const zip = new JSZip();
+    zip.file('handout/readme.txt', 'Start with question 1.');
+    zip.file('handout/page.html', '<h1>Part B</h1>');
+    zip.file('handout/style.css', 'body{}');
+    const r = await extractFile(await zip.generateAsync({ type: 'nodebuffer' }), 'bundle.zip');
+    expect(r.kind).toBe('zip');
+    expect(r.text).toContain('Zip archive with 3 files');
+    expect(r.text).toContain('=== handout/readme.txt ===\nStart with question 1.');
+    expect(r.text).toContain('# Part B');
+    expect(r.text).not.toContain('=== handout/style.css');
+  });
+
+  it('says when a zip is a SCORM package', async () => {
+    const zip = new JSZip();
+    zip.file('imsmanifest.xml', '<manifest/>');
+    zip.file('index.html', '<p>Module 1 overview</p>');
+    const r = await extractFile(await zip.generateAsync({ type: 'nodebuffer' }), 'pkg.zip');
+    expect(r.text).toMatch(/^SCORM package/);
+    expect(r.text).toContain('Module 1 overview');
+  });
+
+  it('says videos have no text', async () => {
+    const r = await extractFile(Buffer.from('xx'), 'lecture.mp4');
+    expect(r.text).toMatch(/a video: it has no text/);
+  });
+
+  it('parses page ranges', () => {
+    expect(parsePageRange('1,4,7-9', 10)).toEqual([1, 4, 7, 8, 9]);
+    expect(parsePageRange('5-3', 10)).toEqual([3, 4, 5]);
+    expect(parsePageRange(undefined, 3)).toEqual([1, 2, 3]);
+    expect(parsePageRange('1-50', 10)).toHaveLength(10);
+    expect(() => parsePageRange('first', 10)).toThrow(/pages must look like/);
   });
 });

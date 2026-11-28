@@ -101,7 +101,15 @@ describe('httpConfig', () => {
       allowNoAuth: false,
       enableDownload: false,
       allowSessionPush: true,
+      oauth: false,
+      publicUrl: undefined,
+      oauthStatePath: undefined,
     });
+  });
+
+  it('reads the OAuth settings', () => {
+    const o = httpConfig({ D2L_OAUTH: 'true', D2L_PUBLIC_URL: 'https://pi.example.net/', D2L_OAUTH_STATE: '/tmp/o.json' });
+    expect(o).toMatchObject({ oauth: true, publicUrl: 'https://pi.example.net', oauthStatePath: '/tmp/o.json' });
   });
 
   it('reads overrides', () => {

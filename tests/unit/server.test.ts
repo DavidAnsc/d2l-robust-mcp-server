@@ -47,7 +47,7 @@ describe('createServer', () => {
     const c = await connected();
     const names = (await c.listTools()).tools.map((t) => t.name);
     expect(names).toContain('download_file');
-    expect(names).toHaveLength(14);
+    expect(names).toHaveLength(27);
   });
 
   it('can leave download_file out', async () => {
@@ -76,5 +76,32 @@ describe('createServer', () => {
     const c = await connected();
     const r = await c.callTool({ name: 'get_session_status', arguments: { check: true } });
     expect(JSON.parse(textOf(r as never)).checkError).toContain('500');
+  });
+});
+
+describe('prompts and resources', () => {
+  it('offers the guide prompts and the d2l:// resource templates', async () => {
+    const c = await connected();
+    const prompts = (await c.listPrompts()).prompts.map((p) => p.name);
+    expect(prompts).toEqual(expect.arrayContaining(['assignment-guide', 'study-guide', 'catch-up']));
+    const templates = (await c.listResourceTemplates()).resourceTemplates.map((t) => t.uriTemplate);
+    expect(templates).toEqual(
+      expect.arrayContaining(['d2l://course/{orgUnitId}/assignment/{assignmentId}', 'd2l://course/{orgUnitId}/module/{moduleId}', 'd2l://course/{orgUnitId}/topic/{topicId}'])
+    );
+    const p = await c.getPrompt({ name: 'assignment-guide', arguments: { course: 'EE101', assignment: 'Lab 2' } });
+    const text = (p.messages[0].content as { text: string }).text;
+    expect(text).toContain('find_related');
+    expect(text).toContain('read_files');
+    expect(text).toContain('Do not write the assignment itself.');
+  });
+});
+
+describe('server instructions', () => {
+  it('tell the client how the tools fit together', async () => {
+    const c = await connected();
+    const text = c.getInstructions() ?? '';
+    expect(text).toContain('"read" ref');
+    expect(text).toContain('read_files');
+    expect(text).toContain('list_unit_items');
   });
 });

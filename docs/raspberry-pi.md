@@ -38,6 +38,13 @@ npm ci                                       # also builds, and downloads Chromi
 sudo npx playwright install-deps chromium    # system libraries Chromium needs
 ```
 
+Optional but worthwhile for study guides: the programs that read old Office files, render
+pages as pictures and OCR scanned PDFs (about 400 MB; skip any you don't need):
+
+```bash
+sudo apt-get install -y poppler-utils tesseract-ocr libreoffice-core libreoffice-writer libreoffice-impress libreoffice-calc
+```
+
 Install as the service user, not with `sudo npm install -g`: Playwright downloads Chromium into
 the installing user's home (`~/.cache/ms-playwright`), so a root install leaves the service
 user without a browser. If Playwright's Chromium won't run on your Pi, install the system one
@@ -63,6 +70,15 @@ journalctl -u d2l-mcp -f
   shown in the server's zone otherwise.
 - `d2l-mcp-keepalive.timer` checks the login every hour. The API token lasts an hour, so each
   check re-opens the saved browser session, which keeps your school's login in use.
+- Optional: keep a Markdown copy of every active course on the Pi, refreshed every 6 hours:
+
+  ```bash
+  sudo cp deploy/systemd/d2l-mcp-sync.* /etc/systemd/system/
+  sudo systemctl daemon-reload && sudo systemctl enable --now d2l-mcp-sync.timer
+  ```
+
+  It writes to `D2L_SYNC_DIR` (default `~/d2l-courses` of the service user). See
+  "A Markdown copy of your courses" in the README.
 - Optional, recommended: set `D2L_NOTIFY_URL=https://ntfy.sh/<long-random-topic>` and subscribe
   to that topic in the [ntfy](https://ntfy.sh) phone app. You then get a notification the moment
   the login expires, instead of finding out when a tool fails.
@@ -95,6 +111,11 @@ Expect `{"state":"unknown"}` (or `"expired"`) until the next step logs the Pi in
 > clients that connect from **Anthropic's servers** rather than from your laptop: custom
 > connectors added at claude.ai, or used from the Claude phone app. Everything in step 5
 > connects from the Mac itself, so `serve` is enough and safer.
+>
+> For a claude.ai connector, use Funnel and turn on OAuth sign-in: set `D2L_OAUTH=true` and
+> `D2L_PUBLIC_URL=https://raspberrypi.tail1234.ts.net` in `/etc/d2l-mcp.env`, restart, and add
+> `https://raspberrypi.tail1234.ts.net/mcp` as the connector. claude.ai then opens a page on
+> the Pi that asks for your `D2L_HTTP_TOKEN` once.
 
 ## 4. Log the Pi in from the Mac
 
@@ -179,7 +200,10 @@ both copies.
   `/session` (login push) accepts the header form only.
 - `d2l-mcp-auth --push` refuses plain `http://` addresses other than localhost.
 - The server only ever sends `GET` requests to Brightspace. `read_file` keeps files in memory
-  and returns their contents; it writes nothing to the Pi's disk. (`download_file`, which does
+  and returns their contents. It never saves the files themselves to the Pi's disk; it does keep
+  their extracted text in `~/.d2l-mcp-cache` (owner-only; `D2L_CACHE=off` stops that), and
+  converting or OCR-ing a file uses a private temporary folder that is deleted straight after.
+  (`download_file`, which does
   write, stays off over HTTP unless `D2L_HTTP_ENABLE_DOWNLOAD=true`.)
 - To turn off login push, set `D2L_HTTP_ALLOW_SESSION_PUSH=false`.
 
@@ -198,6 +222,8 @@ both copies.
 | `D2L_MAX_FILE_MB` | `50` | Largest file `read_file` will fetch |
 | `D2L_BROWSER_PATH` | Google Chrome in `/Applications` on macOS if installed, else Playwright's Chromium | Another Chrome or Chromium to use, e.g. `/usr/bin/chromium`; `playwright` forces Playwright's Chromium |
 | `D2L_DOWNLOAD_DIR` | none | When set, `download_file` only writes inside this folder |
+| `D2L_OAUTH` | `false` | Offer OAuth sign-in (for claude.ai connectors); needs `D2L_PUBLIC_URL` |
+| `D2L_PUBLIC_URL` | none | The HTTPS address clients reach the Pi at, e.g. your Funnel address |
 | `D2L_HEADLESS` | `true` in HTTP mode | Never open a visible browser window |
 | `D2L_SESSION_PATH` | `~/.d2l-session` | Where the browser session is stored |
 | `D2L_TIMEZONE` | the machine's zone | Time zone for dates in tool output |

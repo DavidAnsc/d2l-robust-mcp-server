@@ -7,7 +7,9 @@
  */
 import JSZip from 'jszip';
 import mammoth from 'mammoth';
-import { extname } from 'path';
+import { basename, extname } from 'path';
+import { ocrMaxPages, ocrMode } from './config.js';
+import { convertWithLibreOffice, findProgram, ocrPdf, pdfPagesToPng } from './convert.js';
 
 export type FileKind = 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'html' | 'text' | 'image' | 'zip' | 'unsupported';
 
@@ -42,7 +44,14 @@ const IMAGE_TYPES: Record<string, string> = {
 /** Images larger than this are described, not returned, to keep responses a sane size. */
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-const LEGACY_OFFICE = new Set(['.doc', '.ppt', '.xls']);
+/** Files LibreOffice can turn into one we read, and what into. */
+const CONVERTIBLE: Record<string, 'docx' | 'pptx' | 'xlsx'> = {
+  '.doc': 'docx', '.rtf': 'docx', '.odt': 'docx', '.wpd': 'docx', '.pages': 'docx',
+  '.ppt': 'pptx', '.pps': 'pptx', '.odp': 'pptx',
+  '.xls': 'xlsx', '.ods': 'xlsx',
+};
+
+const MEDIA = /\.(mp4|m4v|mov|webm|avi|mkv|wmv|mp3|m4a|wav|ogg|aac|flac)$/i;
 
 /** Decide what a file is from its name, its Content-Type and its first bytes. */
 export function detectKind(data: Buffer, filename: string, contentType = ''): FileKind {
@@ -57,7 +66,7 @@ export function detectKind(data: Buffer, filename: string, contentType = ''): Fi
   if (IMAGE_TYPES[ext] || /^image\/(png|jpeg|gif|webp)/.test(type)) return 'image';
   if (ext === '.html' || ext === '.htm' || type.includes('text/html')) return 'html';
   if (TEXT_EXTENSIONS.has(ext) || type.startsWith('text/') || type.includes('json')) return 'text';
-  if (LEGACY_OFFICE.has(ext)) return 'unsupported';
+  if (CONVERTIBLE[ext]) return 'unsupported';
   if (ext === '.zip' || head.startsWith('PK')) return 'zip';
   return 'unsupported';
 }
@@ -89,6 +98,15 @@ export function htmlToText(html: string): string {
       .replace(/<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, label: string) => {
         const text = label.replace(/<[^>]*>/g, '').trim();
         return !text || text === href ? href : `${text} (${href})`;
+      })
+      .replace(/<img\s[^>]*>/gi, (tag: string) => {
+        const attr = (name: string) => tag.match(new RegExp(`\\s${name}\\s*=\\s*["']([^"']*)["']`, 'i'))?.[1]?.trim();
+        const alt = attr('alt');
+        const src = attr('src');
+        if (!alt && !src) return '';
+        // Data URIs are the image itself; far too long to print.
+        const where = src && !src.startsWith('data:') ? src : '';
+        return `[Image${alt ? `: ${alt}` : ''}${where ? ` (${where})` : ''}]`;
       })
       .replace(/<h([1-6])[^>]*>/gi, (_m, n: string) => `\n\n${'#'.repeat(Number(n))} `)
       .replace(/<li[^>]*>/gi, '\n- ')
@@ -126,15 +144,26 @@ async function pdfText(data: Buffer): Promise<Extracted> {
       pages.push(text.replace(/[ \t]+\n/g, '\n').trim());
       page.cleanup();
     }
-    const body = pages.map((t, i) => `--- Page ${i + 1} ---\n${t}`).join('\n\n');
     const chars = pages.reduce((n, t) => n + t.length, 0);
-    return {
-      kind: 'pdf',
-      text: body,
-      parts: pdf.numPages,
-      // Under ~20 characters a page usually means the pages are pictures (a scan).
-      note: chars < pdf.numPages * 20 ? 'Little or no text found: this PDF is probably scanned images.' : undefined,
-    };
+    // Under ~20 characters a page usually means the pages are pictures (a scan).
+    let note: string | undefined;
+    if (chars < pdf.numPages * 20) {
+      const max = ocrMaxPages();
+      const ocr = ocrMode() === 'auto' ? await ocrPdf(data, pdf.numPages, max) : undefined;
+      if (ocr && ocr.some((t) => t.length > 0)) {
+        ocr.forEach((t, i) => (pages[i] = t));
+        note =
+          'This PDF is scanned; its text was recognized by OCR and may contain mistakes.' +
+          (pdf.numPages > max ? ` Only the first ${max} of ${pdf.numPages} pages were recognized (D2L_OCR_MAX_PAGES).` : '');
+      } else {
+        note =
+          'Little or no text found: this PDF is probably scanned images.' +
+          (ocrMode() === 'auto' ? ' Install tesseract and poppler (pdftoppm) on the server to have it read by OCR,' : '') +
+          ' or read pages as pictures with read_file asImages=true.';
+      }
+    }
+    const body = pages.map((t, i) => `--- Page ${i + 1} ---\n${t}`).join('\n\n');
+    return { kind: 'pdf', text: body, parts: pdf.numPages, note };
   } finally {
     await pdf.destroy();
   }
@@ -227,10 +256,41 @@ async function xlsxText(data: Buffer): Promise<Extracted> {
   return { kind: 'xlsx', text: out.join('\n\n'), parts: sheets.length };
 }
 
-async function zipListing(data: Buffer): Promise<Extracted> {
+/** Inner files of a zip worth reading, and how much of them. */
+const ZIP_MAX_FILES = 25;
+const ZIP_MAX_CHARS = 300_000;
+const ZIP_MAX_ENTRY_BYTES = 20 * 1024 * 1024;
+const ZIP_SKIP = /\.(js|css|map|woff2?|ttf|eot|svg|png|jpe?g|gif|webp|ico|swf|xsd|dtd)$/i;
+
+/**
+ * A zip's file list, then the text of the readable files inside it (handouts bundled as a zip,
+ * SCORM packages, starter code). Nested zips are only listed.
+ */
+async function zipContents(data: Buffer, depth: number): Promise<Extracted> {
   const zip = await JSZip.loadAsync(data);
-  const files = Object.values(zip.files).filter((f) => !f.dir).map((f) => f.name);
-  return { kind: 'zip', text: `Zip archive with ${files.length} files:\n${files.join('\n')}` };
+  const files = Object.values(zip.files).filter((f) => !f.dir && !f.name.startsWith('__MACOSX/'));
+  const scorm = !!zip.file('imsmanifest.xml');
+  const out = [`${scorm ? 'SCORM package' : 'Zip archive'} with ${files.length} files:\n${files.map((f) => f.name).join('\n')}`];
+  if (depth > 0) return { kind: 'zip', text: out[0] };
+
+  let chars = 0;
+  let read = 0;
+  const candidates = files.filter((f) => !ZIP_SKIP.test(f.name) && !/imsmanifest\.xml$|\.xml$/i.test(f.name) && detectKind(Buffer.alloc(0), f.name) !== 'unsupported');
+  for (const f of candidates) {
+    if (read >= ZIP_MAX_FILES || chars >= ZIP_MAX_CHARS) {
+      out.push(`(Stopped after ${read} files; read the others separately.)`);
+      break;
+    }
+    const size = (f as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize ?? 0;
+    if (size > ZIP_MAX_ENTRY_BYTES) continue;
+    const inner = await extractFile(await f.async('nodebuffer'), basename(f.name), '', depth + 1);
+    if (inner.image || inner.kind === 'unsupported' || !inner.text.trim()) continue;
+    const body = inner.text.slice(0, ZIP_MAX_CHARS - chars);
+    chars += body.length;
+    read++;
+    out.push(`=== ${f.name} ===\n${body}`);
+  }
+  return { kind: 'zip', text: out.join('\n\n'), note: scorm ? 'SCORM package: the readable pages inside it are shown below the file list.' : undefined };
 }
 
 /** Word, PowerPoint and Excel files are zips; without a name or type, look inside to tell which. */
@@ -247,7 +307,22 @@ async function sniffOfficeZip(data: Buffer): Promise<FileKind> {
 }
 
 /** Extract readable content from a file's bytes. Never throws for a bad file: it says so instead. */
-export async function extractFile(data: Buffer, filename: string, contentType = ''): Promise<Extracted> {
+export async function extractFile(data: Buffer, filename: string, contentType = '', depth = 0): Promise<Extracted> {
+  const ext = extname(filename).toLowerCase();
+  const target = CONVERTIBLE[ext];
+  if (target && depth === 0) {
+    const converted = await convertWithLibreOffice(data, filename, target);
+    if (converted) {
+      const result = await extractFile(converted, `${basename(filename, ext)}.${target}`, '', depth + 1);
+      return { ...result, note: [`Converted from ${ext} with LibreOffice.`, result.note].filter(Boolean).join(' ') };
+    }
+  }
+  if (MEDIA.test(filename)) {
+    return {
+      kind: 'unsupported',
+      text: `${filename} is ${/\.(mp3|m4a|wav|ogg|aac|flac)$/i.test(filename) ? 'audio' : 'a video'}: it has no text. Look for a transcript or captions file (.vtt or .srt) next to it in the course content.`,
+    };
+  }
   let kind = detectKind(data, filename, contentType);
   if (kind === 'zip') kind = await sniffOfficeZip(data);
   try {
@@ -265,7 +340,7 @@ export async function extractFile(data: Buffer, filename: string, contentType = 
       case 'text':
         return { kind, text: data.toString('utf-8') };
       case 'zip':
-        return await zipListing(data);
+        return await zipContents(data, depth);
       case 'image': {
         const mimeType = IMAGE_TYPES[extname(filename).toLowerCase()] || contentType.split(';')[0] || 'image/png';
         if (data.length > MAX_IMAGE_BYTES) {
@@ -274,9 +349,8 @@ export async function extractFile(data: Buffer, filename: string, contentType = 
         return { kind, text: `Image: ${filename}`, image: { data: data.toString('base64'), mimeType } };
       }
       default: {
-        const ext = extname(filename).toLowerCase();
-        const hint = LEGACY_OFFICE.has(ext)
-          ? ` Old ${ext} Office files can't be read; ask the instructor for the ${ext}x version or a PDF.`
+        const hint = CONVERTIBLE[ext]
+          ? ` ${ext} files can be read when LibreOffice is installed on the server; otherwise ask the instructor for a ${CONVERTIBLE[ext]} or PDF version.`
           : '';
         return { kind: 'unsupported', text: `Can't extract text from ${filename} (${contentType || 'unknown type'}).${hint}` };
       }
@@ -300,4 +374,87 @@ export function sliceText(text: string, offset: number, maxChars: number): { sli
     if (nl > start + maxChars * 0.8) end = nl + 1;
   }
   return { slice: text.slice(start, end), next: end < text.length ? end : null };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pictures of pages and slides
+// ---------------------------------------------------------------------------------------------
+
+export interface PagePicture {
+  /** 1-based page or slide number. */
+  page: number;
+  mimeType: string;
+  data: Buffer;
+}
+
+/** "3", "2-5", "1,4,7-9" → sorted page numbers, at most `limit` of them. */
+export function parsePageRange(spec: string | undefined, limit: number): number[] {
+  if (!spec?.trim()) return Array.from({ length: limit }, (_, i) => i + 1);
+  const pages = new Set<number>();
+  for (const part of spec.split(',')) {
+    const m = part.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!m) throw new Error(`pages must look like "3", "2-5" or "1,4,7-9"; got "${spec}".`);
+    const a = Number(m[1]);
+    const b = Number(m[2] ?? m[1]);
+    for (let p = Math.min(a, b); p <= Math.max(a, b) && pages.size < 1000; p++) if (p > 0) pages.add(p);
+  }
+  return [...pages].sort((x, y) => x - y).slice(0, limit);
+}
+
+/** The images embedded in each of the given slides (when slides can't be rendered). */
+async function pptxSlideMedia(data: Buffer, pages: number[]): Promise<PagePicture[]> {
+  const zip = await JSZip.loadAsync(data);
+  const slides = Object.keys(zip.files)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .sort((a, b) => entryNumber(a) - entryNumber(b));
+  const out: PagePicture[] = [];
+  for (const page of pages) {
+    const slide = slides[page - 1];
+    if (!slide) continue;
+    const rels = (await zip.file(slide.replace('slides/', 'slides/_rels/') + '.rels')?.async('string')) ?? '';
+    for (const m of rels.matchAll(/Target="\.\.\/media\/([^"]+\.(png|jpe?g|gif|webp))"/gi)) {
+      const file = zip.file(`ppt/media/${m[1]}`);
+      if (!file) continue;
+      const bytes = await file.async('nodebuffer');
+      if (bytes.length > MAX_IMAGE_BYTES) continue;
+      out.push({ page, mimeType: IMAGE_TYPES[extname(m[1]).toLowerCase()] ?? 'image/png', data: bytes });
+    }
+  }
+  return out;
+}
+
+/**
+ * Pictures of the given pages (PDF) or slides (PowerPoint; also Word and Excel pages):
+ * rendered with pdftoppm, through LibreOffice for Office files. Without those programs,
+ * PowerPoint falls back to the images embedded in each slide. Returns a note when nothing works.
+ */
+export async function pagePictures(data: Buffer, filename: string, contentType: string, pages: number[], dpi = 100): Promise<PagePicture[] | string> {
+  let kind = detectKind(data, filename, contentType);
+  if (kind === 'zip') kind = await sniffOfficeZip(data);
+  const ext = extname(filename).toLowerCase();
+  if (kind === 'image') return 'This file is already an image: read it without asImages.';
+
+  let pdf: Buffer | undefined;
+  if (kind === 'pdf') pdf = data;
+  else if (kind === 'docx' || kind === 'pptx' || kind === 'xlsx' || CONVERTIBLE[ext]) pdf = await convertWithLibreOffice(data, filename, 'pdf');
+
+  if (pdf && findProgram('pdftoppm')) {
+    const out: PagePicture[] = [];
+    // Render runs of consecutive pages in one call each.
+    for (let i = 0; i < pages.length; ) {
+      let j = i;
+      while (j + 1 < pages.length && pages[j + 1] === pages[j] + 1) j++;
+      const pngs = (await pdfPagesToPng(pdf, pages[i], pages[j], dpi)) ?? [];
+      pngs.forEach((png, k) => out.push({ page: pages[i] + k, mimeType: 'image/png', data: png }));
+      i = j + 1;
+    }
+    if (out.length) return out;
+    return 'Those pages are past the end of the file.';
+  }
+  if (kind === 'pptx') {
+    const media = await pptxSlideMedia(data, pages);
+    if (media.length) return media;
+    return 'Rendering slides needs LibreOffice and poppler (pdftoppm) on the server, and these slides have no embedded pictures.';
+  }
+  return `Pictures of pages need ${kind === 'pdf' ? 'poppler (pdftoppm)' : 'LibreOffice and poppler (pdftoppm)'} installed on the server.`;
 }
