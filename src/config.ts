@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -11,8 +12,13 @@ import { join } from 'path';
 /** Kept for compatibility with the original project's default. Set D2L_HOST for your school. */
 export const DEFAULT_HOST = 'learn.ul.ie';
 
+/**
+ * The Brightspace host: D2L_HOST, else the host the saved login was made for, else the default.
+ * The middle step means `D2L_HOST=x d2l-mcp-auth` followed by a plain `d2l-mcp-auth --status`
+ * checks x, not the default.
+ */
 export function d2lHost(): string {
-  return (process.env.D2L_HOST || DEFAULT_HOST).replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  return (process.env.D2L_HOST || savedLoginHost() || DEFAULT_HOST).replace(/^https?:\/\//, '').replace(/\/+$/, '');
 }
 
 export function d2lBaseUrl(): string {
@@ -62,6 +68,50 @@ export function sessionPath(): string {
   return process.env.D2L_SESSION_PATH || join(homedir(), '.d2l-session');
 }
 
+/** The copy of the login cookies kept beside the profile (see saved-cookies.ts). */
+export function savedCookiesPath(): string {
+  return join(sessionPath(), 'd2l-mcp-cookies.json');
+}
+
+/** The host recorded with the saved login, if there is one. */
+export function savedLoginHost(): string | undefined {
+  const file = savedCookiesPath();
+  if (!existsSync(file)) return undefined;
+  try {
+    const host = (JSON.parse(readFileSync(file, 'utf-8')) as { host?: unknown }).host;
+    return typeof host === 'string' && host ? host : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface LoginCredentials {
+  username: string;
+  password: string;
+}
+
+/**
+ * The school account to sign in with automatically when the D2L session ends:
+ * D2L_USERNAME plus D2L_PASSWORD, or D2L_PASSWORD_FILE (a file holding just the password,
+ * which keeps it out of the process environment). Undefined when not configured.
+ */
+export function loginCredentials(env: NodeJS.ProcessEnv = process.env): LoginCredentials | undefined {
+  const username = env.D2L_USERNAME?.trim();
+  let password = env.D2L_PASSWORD;
+  if (!password && env.D2L_PASSWORD_FILE) {
+    try {
+      password = readFileSync(env.D2L_PASSWORD_FILE, 'utf-8').replace(/\r?\n$/, '');
+    } catch (error) {
+      throw new Error(`Cannot read D2L_PASSWORD_FILE (${env.D2L_PASSWORD_FILE}): ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  if (!username && !password) return undefined;
+  if (!username || !password) {
+    throw new Error('Automatic login needs both D2L_USERNAME and D2L_PASSWORD (or D2L_PASSWORD_FILE); only one is set.');
+  }
+  return { username, password };
+}
+
 function envFlag(name: string): boolean | undefined {
   const v = process.env[name]?.toLowerCase();
   if (v === 'true' || v === '1') return true;
@@ -91,6 +141,15 @@ export interface HttpConfig {
   enableDownload: boolean;
   /** Accept a fresh login at POST /session (from `d2l-mcp-auth --push`). Default true. */
   allowSessionPush: boolean;
+  /**
+   * Offer OAuth 2.1 sign-in (for clients such as claude.ai connectors that expect it).
+   * The sign-in page asks for D2L_HTTP_TOKEN, so it needs a token. Default false.
+   */
+  oauth: boolean;
+  /** The address clients reach this server at, e.g. https://pi.tailnet.ts.net. Needed for OAuth. */
+  publicUrl?: string;
+  /** Where OAuth clients and tokens are kept. Default: oauth.json in the session folder. */
+  oauthStatePath?: string;
 }
 
 export function httpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig {
@@ -106,6 +165,9 @@ export function httpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig {
     allowNoAuth: env.D2L_HTTP_ALLOW_NO_AUTH === 'true',
     enableDownload: download === 'true' || download === '1',
     allowSessionPush: !['false', '0'].includes(env.D2L_HTTP_ALLOW_SESSION_PUSH?.toLowerCase() ?? ''),
+    oauth: ['true', '1'].includes(env.D2L_OAUTH?.toLowerCase() ?? ''),
+    publicUrl: env.D2L_PUBLIC_URL?.replace(/\/+$/, '') || undefined,
+    oauthStatePath: env.D2L_OAUTH_STATE || undefined,
   };
 }
 
@@ -117,12 +179,31 @@ export function notifyUrl(): string | undefined {
   return process.env.D2L_NOTIFY_URL || undefined;
 }
 
+/** Where Google Chrome is installed by default, per platform. Used when it exists. */
+export const SYSTEM_CHROME: Partial<Record<NodeJS.Platform, string>> = {
+  darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+};
+
 /**
- * Options for launching the browser: D2L_BROWSER_PATH points at a Chromium to use instead of
- * the one Playwright downloaded (for example /usr/bin/chromium on Raspberry Pi OS).
+ * Which browser binary to launch, or undefined for the Chromium Playwright downloaded:
+ *  1. D2L_BROWSER_PATH, if set (D2L_BROWSER_PATH=playwright forces Playwright's own);
+ *  2. else Google Chrome at its default location, if it is installed there (macOS);
+ *  3. else Playwright's Chromium.
  */
+export function browserPath(
+  platform: NodeJS.Platform = process.platform,
+  exists: (path: string) => boolean = existsSync
+): string | undefined {
+  const configured = process.env.D2L_BROWSER_PATH;
+  if (configured) return configured.toLowerCase() === 'playwright' ? undefined : configured;
+  const chrome = SYSTEM_CHROME[platform];
+  return chrome && exists(chrome) ? chrome : undefined;
+}
+
+/** Options for launching the browser (see browserPath). */
 export function browserLaunchOptions(): { executablePath?: string } {
-  return process.env.D2L_BROWSER_PATH ? { executablePath: process.env.D2L_BROWSER_PATH } : {};
+  const path = browserPath();
+  return path ? { executablePath: path } : {};
 }
 
 /** Largest file read_file will fetch, in bytes (D2L_MAX_FILE_MB, default 50). */
@@ -134,4 +215,53 @@ export function maxFileBytes(): number {
 /** When set, download_file only writes inside this folder. */
 export function downloadRoot(): string | undefined {
   return process.env.D2L_DOWNLOAD_DIR || undefined;
+}
+
+/**
+ * Where extracted file text is kept between runs (D2L_CACHE_DIR, default ~/.d2l-mcp-cache).
+ * Undefined when the cache is off (D2L_CACHE=off).
+ */
+export function cacheDir(): string | undefined {
+  const flag = process.env.D2L_CACHE?.toLowerCase();
+  if (flag === 'off' || flag === 'false' || flag === '0') return undefined;
+  return process.env.D2L_CACHE_DIR || join(homedir(), '.d2l-mcp-cache');
+}
+
+/** Most disk the text cache may use (D2L_CACHE_MAX_MB, default 200). */
+export function cacheMaxBytes(): number {
+  const mb = Number(process.env.D2L_CACHE_MAX_MB || '200');
+  return (Number.isFinite(mb) && mb > 0 ? mb : 200) * 1024 * 1024;
+}
+
+/**
+ * OCR for scanned PDFs: "auto" (default) runs it when `tesseract` and `pdftoppm` are installed,
+ * "off" never does.
+ */
+export function ocrMode(): 'auto' | 'off' {
+  return ['off', 'false', '0'].includes(process.env.D2L_OCR?.toLowerCase() ?? '') ? 'off' : 'auto';
+}
+
+/** Most pages OCR reads from one PDF (D2L_OCR_MAX_PAGES, default 40). */
+export function ocrMaxPages(): number {
+  const n = Number(process.env.D2L_OCR_MAX_PAGES || '40');
+  return Number.isInteger(n) && n > 0 ? n : 40;
+}
+
+/**
+ * The courses that count as "active" when D2L's own dates can't be trusted:
+ * D2L_ACTIVE_COURSES, a comma-separated list of orgUnitIds. Undefined when unset.
+ */
+export function activeCourseOverride(): number[] | undefined {
+  const raw = process.env.D2L_ACTIVE_COURSES?.trim();
+  if (!raw) return undefined;
+  const ids = raw.split(',').map((s) => Number(s.trim()));
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new Error(`D2L_ACTIVE_COURSES must be comma-separated course IDs, got "${raw}".`);
+  }
+  return ids;
+}
+
+/** Where `d2l-mcp-sync` writes its Markdown copy of each course (D2L_SYNC_DIR, default ~/d2l-courses). */
+export function syncDir(): string {
+  return process.env.D2L_SYNC_DIR || join(homedir(), 'd2l-courses');
 }

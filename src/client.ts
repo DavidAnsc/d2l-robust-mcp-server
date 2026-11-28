@@ -139,6 +139,82 @@ export class D2LClient {
     );
   }
 
+  /** Rubrics attached to an object, e.g. objectType "Dropbox" with an assignment id. */
+  getRubrics(orgUnitId: number, objectType: 'Dropbox' | 'Quiz' | 'Discussion', objectId: number) {
+    const params = new URLSearchParams({ objectType, objectId: String(objectId) });
+    return this.get(`${le(orgUnitId)}/rubrics?${params}`);
+  }
+
+  // Quizzes
+  getQuizzes(orgUnitId: number) {
+    return this.getAllObjects(`${le(orgUnitId)}/quizzes/`);
+  }
+
+  getQuiz(orgUnitId: number, quizId: number) {
+    return this.get(`${le(orgUnitId)}/quizzes/${quizId}`);
+  }
+
+  getQuizAttempts(orgUnitId: number, quizId: number) {
+    return this.getAllObjects(`${le(orgUnitId)}/quizzes/${quizId}/attempts/`);
+  }
+
+  // Discussions
+  getForums(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/discussions/forums/`);
+  }
+
+  getForumTopics(orgUnitId: number, forumId: number) {
+    return this.get(`${le(orgUnitId)}/discussions/forums/${forumId}/topics/`);
+  }
+
+  getTopicPosts(orgUnitId: number, forumId: number, topicId: number) {
+    return this.get(`${le(orgUnitId)}/discussions/forums/${forumId}/topics/${topicId}/posts/`);
+  }
+
+  // Checklists
+  getChecklists(orgUnitId: number) {
+    return this.getAllObjects(`${le(orgUnitId)}/checklists/`);
+  }
+
+  getChecklistCategories(orgUnitId: number, checklistId: number) {
+    return this.getAllObjects(`${le(orgUnitId)}/checklists/${checklistId}/categories/`);
+  }
+
+  getChecklistItems(orgUnitId: number, checklistId: number, categoryId: number) {
+    return this.getAllObjects(`${le(orgUnitId)}/checklists/${checklistId}/categories/${categoryId}/items/`);
+  }
+
+  // Course overview (the "Course Overview" / syllabus page some schools use)
+  getOverview(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/overview`);
+  }
+
+  getOverviewAttachment(orgUnitId: number) {
+    return this.getFile(`${le(orgUnitId)}/overview/attachment`);
+  }
+
+  /** Counts of unread or new items in a course (discussions, feedback, quizzes…). */
+  getMyUpdates(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/updates/myUpdates`);
+  }
+
+  /**
+   * Every object of a list endpoint. Handles both shapes Brightspace uses: a plain array,
+   * and an ObjectListPage ({ Objects, Next }) whose `Next` link is followed to the end.
+   */
+  async getAllObjects(firstPath: string): Promise<unknown[]> {
+    let path: string | null = firstPath;
+    const objects: unknown[] = [];
+    for (let page = 0; path && page < MAX_PAGES; page++) {
+      const res: unknown = await this.get(path);
+      if (Array.isArray(res)) return res;
+      const pageObj = res as { Objects?: unknown[]; Next?: string | null };
+      objects.push(...(pageObj.Objects ?? []));
+      path = pageObj.Next ? toApiPath(pageObj.Next) : null;
+    }
+    return objects;
+  }
+
   // Content
   /** The file behind a content topic (a File or HTML topic; Link topics have none). */
   getTopicFile(orgUnitId: number, topicId: number) {
@@ -170,6 +246,15 @@ export class D2LClient {
     return this.get(`${le(orgUnitId)}/grades/`);
   }
 
+  /** Your final calculated/adjusted grade, when the course releases it. */
+  getMyFinalGrade(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/grades/final/values/myGradeValue`);
+  }
+
+  getGradeCategories(orgUnitId: number) {
+    return this.get(`${le(orgUnitId)}/grades/categories/`);
+  }
+
   // Calendar (an ObjectListPage: follow `Next` until it is empty)
   async getMyCalendarEvents(orgUnitId: number, startDateTime: string, endDateTime: string) {
     const params = new URLSearchParams({ startDateTime, endDateTime });
@@ -194,6 +279,11 @@ export class D2LClient {
   }
 
   // User and enrollments
+  /** A course offering's own record: its dates, active flag and semester. */
+  getCourseOffering(orgUnitId: number) {
+    return this.get(`${lp}/courses/${orgUnitId}`);
+  }
+
   whoami() {
     return this.get(`${lp}/users/whoami`);
   }

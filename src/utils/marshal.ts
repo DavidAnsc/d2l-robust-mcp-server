@@ -231,6 +231,8 @@ export interface RawEnrollment {
     IsActive: boolean;
     CanAccess: boolean;
     LastAccessed: string | null;
+    StartDate?: string | null;
+    EndDate?: string | null;
   };
 }
 
@@ -243,6 +245,8 @@ export interface MarshalledCourse {
   isActive: boolean;
   canAccess: boolean;
   lastAccessed: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
 }
 
 export function marshalEnrollments(response: { Items: RawEnrollment[] }): MarshalledCourse[] {
@@ -257,7 +261,91 @@ export function marshalEnrollments(response: { Items: RawEnrollment[] }): Marsha
       isActive: e.Access.IsActive,
       canAccess: e.Access.CanAccess,
       lastAccessed: formatDate(e.Access.LastAccessed),
+      startDate: formatDate(e.Access.StartDate),
+      endDate: formatDate(e.Access.EndDate),
     })) as MarshalledCourse[];
+}
+
+// ============= RUBRICS =============
+export interface RawRubric {
+  RubricId?: number;
+  Name: string;
+  Description?: { Text?: string; Html?: string } | null;
+  /** 0 analytic, 1 holistic. */
+  RubricType?: number;
+  CriteriaGroups?: Array<{
+    Name?: string;
+    Levels?: Array<{ Id: number; Name: string; Points?: number | null }>;
+    Criteria?: Array<{
+      Id: number;
+      Name: string;
+      Cells?: Array<{ Description?: { Text?: string; Html?: string } | null; Feedback?: { Text?: string; Html?: string } | null; Points?: number | null }>;
+    }>;
+  }>;
+  OverallLevels?: Array<{ Name: string; RangeStart?: number | null; Description?: { Text?: string; Html?: string } | null }>;
+}
+
+export interface MarshalledRubric {
+  name: string;
+  description?: string;
+  criteria: Array<{
+    name: string;
+    levels: Array<{ level: string; points?: number; description?: string }>;
+  }>;
+  overallLevels?: Array<{ level: string; from?: number; description?: string }>;
+}
+
+export function marshalRubric(r: RawRubric): MarshalledRubric {
+  const criteria: MarshalledRubric['criteria'] = [];
+  for (const group of r.CriteriaGroups ?? []) {
+    const levels = group.Levels ?? [];
+    for (const c of group.Criteria ?? []) {
+      criteria.push({
+        name: group.Name && (r.CriteriaGroups?.length ?? 0) > 1 ? `${group.Name}: ${c.Name}` : c.Name,
+        levels: levels.map((l, i) => {
+          const cell = c.Cells?.[i];
+          const points = cell?.Points ?? l.Points ?? undefined;
+          return removeEmpty({
+            level: l.Name,
+            points: points ?? undefined,
+            description: stripHtml(cell?.Description?.Text || cell?.Description?.Html) || undefined,
+          }) as { level: string; points?: number; description?: string };
+        }),
+      });
+    }
+  }
+  return removeEmpty({
+    name: r.Name,
+    description: stripHtml(r.Description?.Text || r.Description?.Html) || undefined,
+    criteria,
+    overallLevels: r.OverallLevels?.length
+      ? r.OverallLevels.map((l) => removeEmpty({
+          level: l.Name,
+          from: l.RangeStart ?? undefined,
+          description: stripHtml(l.Description?.Text || l.Description?.Html) || undefined,
+        }) as { level: string; from?: number; description?: string })
+      : undefined,
+  }) as MarshalledRubric;
+}
+
+/** A rubric as Markdown: one heading per criterion, one line per level. */
+export function rubricToMarkdown(r: MarshalledRubric): string {
+  const lines = [`### Rubric: ${r.name}`];
+  if (r.description) lines.push(r.description);
+  for (const c of r.criteria) {
+    lines.push('', `**${c.name}**`);
+    for (const l of c.levels) {
+      const pts = l.points !== undefined ? ` (${l.points} pts)` : '';
+      lines.push(`- ${l.level}${pts}${l.description ? `: ${l.description}` : ''}`);
+    }
+  }
+  if (r.overallLevels?.length) {
+    lines.push('', '**Overall levels**');
+    for (const l of r.overallLevels) {
+      lines.push(`- ${l.level}${l.from !== undefined ? ` (from ${l.from})` : ''}${l.description ? `: ${l.description}` : ''}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 // ============= ASSIGNMENTS =============
@@ -265,8 +353,14 @@ export interface RawAssignment {
   Id: number;
   Name: string;
   DueDate: string | null;
+  StartDate?: string | null;
+  EndDate?: string | null;
+  GradeItemId?: number | null;
+  /** 1 group, 2 individual. */
+  DropboxType?: number;
+  IsHidden?: boolean;
   CustomInstructions: { Text: string; Html: string };
-  Assessment: { ScoreDenominator: number };
+  Assessment: { ScoreDenominator: number; Rubrics?: RawRubric[] };
   Attachments: RawFile[];
   LinkAttachments: Array<{ Name: string; Url: string }>;
   AllowableFileType: number;
@@ -283,6 +377,11 @@ export interface MarshalledAssignment {
   attachments?: MarshalledFile[];
   links?: Array<{ name: string; url: string }>;
   allowedFileTypes: string | null;
+  availableFrom?: string | null;
+  availableUntil?: string | null;
+  gradeItemId?: number | null;
+  groupAssignment?: boolean;
+  rubrics?: MarshalledRubric[];
 }
 
 export function marshalAssignments(assignments: RawAssignment[]): MarshalledAssignment[] {
@@ -308,6 +407,11 @@ export function marshalAssignment(a: RawAssignment): MarshalledAssignment {
       ? a.LinkAttachments.map((l) => ({ name: l.Name, url: l.Url }))
       : undefined,
     allowedFileTypes: fileTypes,
+    availableFrom: formatDate(a.StartDate),
+    availableUntil: formatDate(a.EndDate),
+    gradeItemId: a.GradeItemId ?? null,
+    groupAssignment: a.DropboxType === 1 ? true : undefined,
+    rubrics: a.Assessment?.Rubrics?.length ? a.Assessment.Rubrics.map(marshalRubric) : undefined,
   }) as MarshalledAssignment;
 }
 

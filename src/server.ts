@@ -11,7 +11,11 @@ import { enrollmentTools } from './tools/enrollments.js';
 import { fileTools } from './tools/files.js';
 import { sessionTools } from './tools/session.js';
 import { readTools, ToolContent } from './tools/read.js';
+import { studyTools } from './tools/study.js';
+import { courseworkTools } from './tools/coursework.js';
+import { acrossTools } from './tools/across.js';
 import { SessionExpiredError } from './session.js';
+import { registerPrompts, registerResources } from './prompts.js';
 
 const pkg = createRequire(import.meta.url)('../package.json') as { version: string };
 export const VERSION = pkg.version;
@@ -39,6 +43,9 @@ const readOnlyTools: Record<string, ToolDef> = {
   ...enrollmentTools,
   ...sessionTools,
   ...readTools,
+  ...studyTools,
+  ...courseworkTools,
+  ...acrossTools,
 };
 
 /** First line of an error, without terminal colour codes (Playwright adds a call log and ANSI codes). */
@@ -70,9 +77,21 @@ function register(server: McpServer, name: string, tool: ToolDef): void {
   });
 }
 
+/** Sent to every client when it connects: how the tools fit together. */
+export const INSTRUCTIONS = `Read-only access to the user's D2L Brightspace courses.
+
+How the tools fit together:
+- Find: get_active_courses (this term) gives orgUnitIds. get_course_content or list_unit_items show what a course or unit holds; get_assignments, get_announcements, get_quizzes, get_discussions list those areas; search_course finds where something is mentioned; whats_new shows recent changes across courses.
+- Read: anything with text carries a "read" ref. Pass refs to read_files (up to 20 per call) or read_file (one file, long ones in parts, or asImages=true for pictures of slides and pages). Read what is relevant rather than everything.
+- Assignment guides: get_assignment (instructions, rubric, weight, attachments) + find_related (content and announcements about it) + get_assignment_submissions (feedback).
+- Study guides: list_unit_items for the units, then read_files on the lecture slides, notes and worksheets; get_course_overview and get_quizzes for what a test covers.
+Parts of the API can be off for students at some schools; tools then say "not available to students at this school" and carry on. An error starting SESSION_EXPIRED means the user must log in again (d2l-mcp-auth).`;
+
 export function createServer(options: ServerOptions = {}): McpServer {
-  const server = new McpServer({ name: 'd2l-brightspace', version: VERSION });
+  const server = new McpServer({ name: 'd2l-brightspace', version: VERSION }, { instructions: INSTRUCTIONS });
   for (const [name, tool] of Object.entries(readOnlyTools)) register(server, name, tool);
   if (options.enableDownload ?? true) register(server, 'download_file', fileTools.download_file);
+  registerPrompts(server);
+  registerResources(server);
   return server;
 }
