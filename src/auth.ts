@@ -11,17 +11,18 @@
  */
 import { chromium, BrowserContext, Page } from 'playwright';
 import { chmodSync, existsSync, mkdirSync } from 'fs';
-import { browserLaunchOptions, d2lBaseUrl, isHeadlessOnly, sessionPath } from './config.js';
+import { browserLaunchOptions, d2lBaseUrl, isHeadlessOnly, loginCredentials, sessionPath } from './config.js';
+import { isLoginPage, tryAutoLogin } from './login-page.js';
 import { markSessionExpired, markSessionValid, SessionExpiredError } from './session.js';
 import { restoreCookies, saveCookies, writeSavedCookies } from './saved-cookies.js';
 
 const TOKEN_TTL_MS = 60 * 60 * 1000; // Brightspace tokens last about an hour
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
-const SSO_BUTTON = 'button.d2l-button-sso-1, button:has-text("Student & Staff Login")';
 
 /** How long to wait for each step, depending on whether a person may be logging in. */
 const TIMEOUTS = {
   ssoRedirect: { unattended: 15_000, interactive: 60_000 },
+  passwordLogin: 60_000,
   tokenCapture: { unattended: 10_000, interactive: 120_000 },
   manualLogin: 120_000,
 };
@@ -38,10 +39,6 @@ export function withProfile<T>(fn: () => Promise<T>): Promise<T> {
   const run = profileQueue.then(fn, fn);
   profileQueue = run.catch(() => undefined);
   return run;
-}
-
-function isLoginPage(url: string): boolean {
-  return url.includes('login') || url.includes('microsoftonline') || url.includes('sso') || url.includes('adfs');
 }
 
 /**
@@ -89,22 +86,6 @@ function expired(): never {
 }
 
 /**
- * On a login page, press the school's single-sign-on button if there is one. A still-valid
- * SSO session then redirects back without anyone typing. Returns whether we left the login page.
- */
-async function trySsoLogin(page: Page, timeoutMs: number): Promise<boolean> {
-  try {
-    const button = page.locator(SSO_BUTTON);
-    if (!(await button.isVisible())) return false;
-    await button.click();
-    await page.waitForURL((url) => !isLoginPage(url.toString()), { timeout: timeoutMs });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Open the home page and capture the bearer token from its API calls.
  * `unattended`: nobody is watching, so give up quickly if a login is needed.
  * Returns null when a login is needed and `unattended` is true.
@@ -124,7 +105,7 @@ async function captureToken(context: BrowserContext, unattended: boolean): Promi
     await page.goto(`${d2lBaseUrl()}/d2l/home`, { waitUntil: 'networkidle' });
 
     if (isLoginPage(page.url())) {
-      if (await trySsoLogin(page, TIMEOUTS.ssoRedirect[mode])) {
+      if (await tryAutoLogin(page, loginCredentials(), { sso: TIMEOUTS.ssoRedirect[mode], password: TIMEOUTS.passwordLogin })) {
         await page.waitForLoadState('networkidle');
       } else if (unattended) {
         return null;
@@ -155,14 +136,15 @@ async function captureToken(context: BrowserContext, unattended: boolean): Promi
 }
 
 async function fetchToken(): Promise<string> {
-  const hasSession = existsSync(sessionPath());
+  // With a saved session or automatic-login credentials, try quietly first; only show a
+  // window if that fails and there is a screen to show it on.
+  const quiet = existsSync(sessionPath()) || loginCredentials() !== undefined;
   const headlessOnly = isHeadlessOnly();
-  if (!hasSession && headlessOnly) expired();
+  if (!quiet && headlessOnly) expired();
 
-  // With a saved session, try quietly first; only show a window if a login is needed.
-  let context = await launch(hasSession);
+  let context = await launch(quiet);
   try {
-    let token = await captureToken(context, hasSession);
+    let token = await captureToken(context, quiet);
     if (token === null) {
       await context.close();
       if (headlessOnly) expired();
@@ -241,18 +223,19 @@ export async function importCookies(cookies: Parameters<BrowserContext['addCooki
 
 /** Use withAuthenticatedContext instead: this one is not queued. The caller must close it. */
 async function getAuthenticatedContext(): Promise<BrowserContext> {
-  const hasSession = existsSync(sessionPath());
+  const quiet = existsSync(sessionPath()) || loginCredentials() !== undefined;
   const headlessOnly = isHeadlessOnly();
-  if (!hasSession && headlessOnly) expired();
+  if (!quiet && headlessOnly) expired();
 
-  let headless = hasSession;
+  let headless = quiet;
   let context = await launch(headless);
   try {
     let page = await context.newPage();
     await page.goto(`${d2lBaseUrl()}/d2l/home`, { waitUntil: 'domcontentloaded' });
 
     const mode = headless ? 'unattended' : 'interactive';
-    if (isLoginPage(page.url()) && !(await trySsoLogin(page, TIMEOUTS.ssoRedirect[mode]))) {
+    const auto = { sso: TIMEOUTS.ssoRedirect[mode], password: TIMEOUTS.passwordLogin };
+    if (isLoginPage(page.url()) && !(await tryAutoLogin(page, loginCredentials(), auto))) {
       if (headless) {
         await context.close();
         if (headlessOnly) expired();

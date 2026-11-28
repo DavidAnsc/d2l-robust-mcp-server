@@ -85,6 +85,33 @@ export function savedLoginHost(): string | undefined {
   }
 }
 
+export interface LoginCredentials {
+  username: string;
+  password: string;
+}
+
+/**
+ * The school account to sign in with automatically when the D2L session ends:
+ * D2L_USERNAME plus D2L_PASSWORD, or D2L_PASSWORD_FILE (a file holding just the password,
+ * which keeps it out of the process environment). Undefined when not configured.
+ */
+export function loginCredentials(env: NodeJS.ProcessEnv = process.env): LoginCredentials | undefined {
+  const username = env.D2L_USERNAME?.trim();
+  let password = env.D2L_PASSWORD;
+  if (!password && env.D2L_PASSWORD_FILE) {
+    try {
+      password = readFileSync(env.D2L_PASSWORD_FILE, 'utf-8').replace(/\r?\n$/, '');
+    } catch (error) {
+      throw new Error(`Cannot read D2L_PASSWORD_FILE (${env.D2L_PASSWORD_FILE}): ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  if (!username && !password) return undefined;
+  if (!username || !password) {
+    throw new Error('Automatic login needs both D2L_USERNAME and D2L_PASSWORD (or D2L_PASSWORD_FILE); only one is set.');
+  }
+  return { username, password };
+}
+
 function envFlag(name: string): boolean | undefined {
   const v = process.env[name]?.toLowerCase();
   if (v === 'true' || v === '1') return true;

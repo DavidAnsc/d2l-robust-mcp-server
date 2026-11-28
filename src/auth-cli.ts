@@ -16,7 +16,7 @@
  */
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { clearTokenCache, getToken, getTokenExpiry, importCookies, launchProfile } from './auth.js';
-import { d2lHost, isHeadlessOnly, sessionPath } from './config.js';
+import { d2lHost, isHeadlessOnly, loginCredentials, sessionPath } from './config.js';
 import { restoreCookies } from './saved-cookies.js';
 import { ExportFile, parseExportFile, SessionExpiredError, sessionEndpoint } from './session.js';
 
@@ -30,6 +30,12 @@ const USAGE = `Usage:
 
 
 async function login(): Promise<void> {
+  if (loginCredentials()) {
+    console.log(`Signing in to ${d2lHost()} as ${loginCredentials()!.username} (from D2L_USERNAME)...`);
+    await getToken();
+    console.log(`Signed in. Token cached until ${new Date(getTokenExpiry()).toLocaleString()}.`);
+    return;
+  }
   if (isHeadlessOnly()) {
     console.error('No display available, so a login window cannot open here.');
     console.error('Log in on a machine with a screen, then:');
