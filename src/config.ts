@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -11,8 +12,13 @@ import { join } from 'path';
 /** Kept for compatibility with the original project's default. Set D2L_HOST for your school. */
 export const DEFAULT_HOST = 'learn.ul.ie';
 
+/**
+ * The Brightspace host: D2L_HOST, else the host the saved login was made for, else the default.
+ * The middle step means `D2L_HOST=x d2l-mcp-auth` followed by a plain `d2l-mcp-auth --status`
+ * checks x, not the default.
+ */
 export function d2lHost(): string {
-  return (process.env.D2L_HOST || DEFAULT_HOST).replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  return (process.env.D2L_HOST || savedLoginHost() || DEFAULT_HOST).replace(/^https?:\/\//, '').replace(/\/+$/, '');
 }
 
 export function d2lBaseUrl(): string {
@@ -60,6 +66,23 @@ export function displayTimeZone(): string | undefined {
  */
 export function sessionPath(): string {
   return process.env.D2L_SESSION_PATH || join(homedir(), '.d2l-session');
+}
+
+/** The copy of the login cookies kept beside the profile (see saved-cookies.ts). */
+export function savedCookiesPath(): string {
+  return join(sessionPath(), 'd2l-mcp-cookies.json');
+}
+
+/** The host recorded with the saved login, if there is one. */
+export function savedLoginHost(): string | undefined {
+  const file = savedCookiesPath();
+  if (!existsSync(file)) return undefined;
+  try {
+    const host = (JSON.parse(readFileSync(file, 'utf-8')) as { host?: unknown }).host;
+    return typeof host === 'string' && host ? host : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function envFlag(name: string): boolean | undefined {

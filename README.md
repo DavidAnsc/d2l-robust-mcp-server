@@ -68,7 +68,8 @@ npm link        # puts d2l-mcp and d2l-mcp-auth on your PATH
 3. Restart Claude Desktop and ask "What's due this week?"
 
 `D2L_HOST` is the address you see in the browser when you use Brightspace, without
-`https://`. If you leave it unset, it defaults to `learn.ul.ie` (the original project's school).
+`https://`. Once you have logged in, later commands without `D2L_HOST` use the host of that
+login; with no login and no `D2L_HOST`, it defaults to `learn.ul.ie` (the original project's school).
 
 ## Remote use (HTTP)
 
@@ -148,11 +149,15 @@ delete both copies. The file is as good as your password until the session
 ends. Export and import move cookies, not the browser folder, because the browser encrypts its
 cookie store with a key tied to the operating system.
 
+Brightspace's login cookies are often *session cookies*, which the browser deletes when it
+closes. So the login also keeps a copy of its cookies in `~/.d2l-session/d2l-mcp-cookies.json`
+(permissions 600, same sensitivity as the folder) and puts back any the browser dropped.
+
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `D2L_HOST` | `learn.ul.ie` | Your Brightspace host |
+| `D2L_HOST` | host of the saved login, else `learn.ul.ie` | Your Brightspace host |
 | `D2L_COURSE_ID` | none | Default course for tools called without `orgUnitId` |
 | `D2L_TIMEZONE` | machine's zone | IANA time zone for dates, e.g. `America/Toronto` |
 | `D2L_SESSION_PATH` | `~/.d2l-session` | Where the browser login is stored |

@@ -13,6 +13,7 @@ import { chromium, BrowserContext, Page } from 'playwright';
 import { chmodSync, existsSync, mkdirSync } from 'fs';
 import { browserLaunchOptions, d2lBaseUrl, isHeadlessOnly, sessionPath } from './config.js';
 import { markSessionExpired, markSessionValid, SessionExpiredError } from './session.js';
+import { restoreCookies, saveCookies, writeSavedCookies } from './saved-cookies.js';
 
 const TOKEN_TTL_MS = 60 * 60 * 1000; // Brightspace tokens last about an hour
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
@@ -43,12 +44,21 @@ function isLoginPage(url: string): boolean {
   return url.includes('login') || url.includes('microsoftonline') || url.includes('sso') || url.includes('adfs');
 }
 
-function launch(headless: boolean): Promise<BrowserContext> {
-  return chromium.launchPersistentContext(sessionPath(), {
+/** Open the saved profile, putting back the login cookies Chromium dropped on the last close. */
+async function launch(headless: boolean, restore = true): Promise<BrowserContext> {
+  const context = await chromium.launchPersistentContext(sessionPath(), {
     ...browserLaunchOptions(),
     headless,
     viewport: { width: 1280, height: 720 },
   });
+  if (restore) {
+    try {
+      await restoreCookies(context);
+    } catch (error) {
+      console.error('Could not restore saved cookies:', error instanceof Error ? error.message : error);
+    }
+  }
+  return context;
 }
 
 function expired(): never {
@@ -140,6 +150,7 @@ async function fetchToken(): Promise<string> {
     }
     if (!token) expired();
 
+    await saveCookies(context);
     tokenCache = { token, expiresAt: Date.now() + TOKEN_TTL_MS };
     markSessionValid(tokenCache.expiresAt);
     return token;
@@ -191,10 +202,12 @@ export async function importCookies(cookies: Parameters<BrowserContext['addCooki
   await withProfile(async () => {
     mkdirSync(sessionPath(), { recursive: true, mode: 0o700 });
     chmodSync(sessionPath(), 0o700);
-    const context = await launch(true);
+    const context = await launch(true, false);
     try {
       await context.clearCookies();
       await context.addCookies(cookies);
+      // Keep the imported set as the saved copy too, so an older copy can't be restored over it.
+      writeSavedCookies(await context.cookies());
     } finally {
       await context.close();
     }
@@ -232,6 +245,7 @@ async function getAuthenticatedContext(): Promise<BrowserContext> {
     }
 
     await page.close();
+    await saveCookies(context);
     markSessionValid();
     return context;
   } catch (error) {

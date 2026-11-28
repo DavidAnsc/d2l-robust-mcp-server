@@ -49,7 +49,7 @@ async function login(): Promise<void> {
   console.log('Authentication successful!');
   console.log(`Token expires at: ${expiry.toLocaleString()}`);
   console.log('');
-  console.log('Your session has been saved. The MCP server will use it automatically.');
+  console.log(`Your session for ${d2lHost()} has been saved. The MCP server will use it automatically.`);
   console.log('Token (first 50 chars):', token.substring(0, 50) + '...');
 }
 
@@ -126,6 +126,7 @@ async function importSession(file: string): Promise<void> {
 async function status(): Promise<void> {
   process.env.D2L_HEADLESS = 'true';
   clearTokenCache();
+  console.log(`Checking the saved login for ${d2lHost()} (profile ${sessionPath()})...`);
   try {
     await getToken();
     console.log(`Session is valid. Token cached until ${new Date(getTokenExpiry()).toLocaleString()}.`);
