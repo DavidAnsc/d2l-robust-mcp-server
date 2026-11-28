@@ -42,6 +42,17 @@ npm ci          # installs, builds, and downloads Chromium
 npm link        # puts d2l-mcp and d2l-mcp-auth on your PATH
 ```
 
+`npm ci` downloads Playwright's Chromium (about 250 MB in two parts). After each part
+reaches 100% it unpacks with no progress shown, which can take a few minutes. If the
+download fails, the rest of the install still finishes and prints how to fix it. To skip the
+download and use a Chrome you already have, install with `D2L_BROWSER_PATH` set, and keep it
+set when you run `d2l-mcp` and `d2l-mcp-auth`:
+
+```bash
+export D2L_BROWSER_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # macOS
+npm ci
+```
+
 ## Quick start (Claude Desktop)
 
 1. Log in once. A browser window opens; sign in to Brightspace as usual.

@@ -44,13 +44,35 @@ function isLoginPage(url: string): boolean {
   return url.includes('login') || url.includes('microsoftonline') || url.includes('sso') || url.includes('adfs');
 }
 
+/**
+ * Open a browser on a saved profile. If no browser is installed (the Chromium download was
+ * skipped or failed during `npm ci`), say how to fix it instead of Playwright's long message.
+ */
+export async function launchProfile(
+  profile: string,
+  options: { headless: boolean; viewport?: { width: number; height: number } }
+): Promise<BrowserContext> {
+  try {
+    return await chromium.launchPersistentContext(profile, { ...browserLaunchOptions(), ...options });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/Executable doesn't exist|Failed to launch.*(ENOENT|no such file)/is.test(message)) {
+      const custom = process.env.D2L_BROWSER_PATH;
+      throw new Error(
+        custom
+          ? `No browser at D2L_BROWSER_PATH=${custom}. Point it at a Chrome or Chromium that exists.`
+          : 'No browser installed for logging in to Brightspace. Run `npx playwright install chromium` ' +
+            'in the d2l-robust-mcp-server folder, or set D2L_BROWSER_PATH to a Chrome you already have ' +
+            '(on a Mac: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").'
+      );
+    }
+    throw error;
+  }
+}
+
 /** Open the saved profile, putting back the login cookies Chromium dropped on the last close. */
 async function launch(headless: boolean, restore = true): Promise<BrowserContext> {
-  const context = await chromium.launchPersistentContext(sessionPath(), {
-    ...browserLaunchOptions(),
-    headless,
-    viewport: { width: 1280, height: 720 },
-  });
+  const context = await launchProfile(sessionPath(), { headless, viewport: { width: 1280, height: 720 } });
   if (restore) {
     try {
       await restoreCookies(context);
