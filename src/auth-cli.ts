@@ -14,10 +14,9 @@
  * not reliable across operating systems because the browser encrypts its cookie store
  * with an OS-specific key.
  */
-import { chromium } from 'playwright';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'fs';
-import { clearTokenCache, getToken, getTokenExpiry, importCookies } from './auth.js';
-import { browserLaunchOptions, d2lHost, isHeadlessOnly, sessionPath } from './config.js';
+import { clearTokenCache, getToken, getTokenExpiry, importCookies, launchProfile } from './auth.js';
+import { d2lHost, isHeadlessOnly, sessionPath } from './config.js';
 import { ExportFile, parseExportFile, SessionExpiredError, sessionEndpoint } from './session.js';
 
 const USAGE = `Usage:
@@ -59,7 +58,7 @@ async function readSession(): Promise<ExportFile> {
   if (!existsSync(profile)) {
     throw new Error(`No saved session at ${profile}. Run d2l-mcp-auth first.`);
   }
-  const context = await chromium.launchPersistentContext(profile, { ...browserLaunchOptions(), headless: true });
+  const context = await launchProfile(profile, { headless: true });
   try {
     const { cookies } = await context.storageState();
     return { format: 'd2l-mcp-session', version: 1, host: d2lHost(), exportedAt: new Date().toISOString(), cookies };
