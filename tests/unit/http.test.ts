@@ -92,7 +92,7 @@ describe('HTTP transport', () => {
     expect(names).toContain('get_upcoming_due_dates');
     expect(names).toContain('get_session_status');
     expect(names).not.toContain('download_file');
-    expect(names).toHaveLength(13);
+    expect(names).toHaveLength(25);
     expect(names).toContain('read_file');
     await c.close();
   });

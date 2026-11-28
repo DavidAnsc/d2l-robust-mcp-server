@@ -141,6 +141,15 @@ export interface HttpConfig {
   enableDownload: boolean;
   /** Accept a fresh login at POST /session (from `d2l-mcp-auth --push`). Default true. */
   allowSessionPush: boolean;
+  /**
+   * Offer OAuth 2.1 sign-in (for clients such as claude.ai connectors that expect it).
+   * The sign-in page asks for D2L_HTTP_TOKEN, so it needs a token. Default false.
+   */
+  oauth: boolean;
+  /** The address clients reach this server at, e.g. https://pi.tailnet.ts.net. Needed for OAuth. */
+  publicUrl?: string;
+  /** Where OAuth clients and tokens are kept. Default: oauth.json in the session folder. */
+  oauthStatePath?: string;
 }
 
 export function httpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig {
@@ -156,6 +165,9 @@ export function httpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig {
     allowNoAuth: env.D2L_HTTP_ALLOW_NO_AUTH === 'true',
     enableDownload: download === 'true' || download === '1',
     allowSessionPush: !['false', '0'].includes(env.D2L_HTTP_ALLOW_SESSION_PUSH?.toLowerCase() ?? ''),
+    oauth: ['true', '1'].includes(env.D2L_OAUTH?.toLowerCase() ?? ''),
+    publicUrl: env.D2L_PUBLIC_URL?.replace(/\/+$/, '') || undefined,
+    oauthStatePath: env.D2L_OAUTH_STATE || undefined,
   };
 }
 
@@ -203,4 +215,53 @@ export function maxFileBytes(): number {
 /** When set, download_file only writes inside this folder. */
 export function downloadRoot(): string | undefined {
   return process.env.D2L_DOWNLOAD_DIR || undefined;
+}
+
+/**
+ * Where extracted file text is kept between runs (D2L_CACHE_DIR, default ~/.d2l-mcp-cache).
+ * Undefined when the cache is off (D2L_CACHE=off).
+ */
+export function cacheDir(): string | undefined {
+  const flag = process.env.D2L_CACHE?.toLowerCase();
+  if (flag === 'off' || flag === 'false' || flag === '0') return undefined;
+  return process.env.D2L_CACHE_DIR || join(homedir(), '.d2l-mcp-cache');
+}
+
+/** Most disk the text cache may use (D2L_CACHE_MAX_MB, default 200). */
+export function cacheMaxBytes(): number {
+  const mb = Number(process.env.D2L_CACHE_MAX_MB || '200');
+  return (Number.isFinite(mb) && mb > 0 ? mb : 200) * 1024 * 1024;
+}
+
+/**
+ * OCR for scanned PDFs: "auto" (default) runs it when `tesseract` and `pdftoppm` are installed,
+ * "off" never does.
+ */
+export function ocrMode(): 'auto' | 'off' {
+  return ['off', 'false', '0'].includes(process.env.D2L_OCR?.toLowerCase() ?? '') ? 'off' : 'auto';
+}
+
+/** Most pages OCR reads from one PDF (D2L_OCR_MAX_PAGES, default 40). */
+export function ocrMaxPages(): number {
+  const n = Number(process.env.D2L_OCR_MAX_PAGES || '40');
+  return Number.isInteger(n) && n > 0 ? n : 40;
+}
+
+/**
+ * The courses that count as "active" when D2L's own dates can't be trusted:
+ * D2L_ACTIVE_COURSES, a comma-separated list of orgUnitIds. Undefined when unset.
+ */
+export function activeCourseOverride(): number[] | undefined {
+  const raw = process.env.D2L_ACTIVE_COURSES?.trim();
+  if (!raw) return undefined;
+  const ids = raw.split(',').map((s) => Number(s.trim()));
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new Error(`D2L_ACTIVE_COURSES must be comma-separated course IDs, got "${raw}".`);
+  }
+  return ids;
+}
+
+/** Where `d2l-mcp-sync` writes its Markdown copy of each course (D2L_SYNC_DIR, default ~/d2l-courses). */
+export function syncDir(): string {
+  return process.env.D2L_SYNC_DIR || join(homedir(), 'd2l-courses');
 }

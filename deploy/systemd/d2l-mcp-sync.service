@@ -1,0 +1,16 @@
+# Writes a Markdown copy of every active course to D2L_SYNC_DIR (see d2l-mcp-sync --help).
+# Runs as the same user as d2l-mcp.service so it shares the saved login and the text cache.
+[Unit]
+Description=Sync D2L courses to Markdown
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Same user as d2l-mcp.service (change both together).
+User=pi
+EnvironmentFile=/etc/d2l-mcp.env
+ExecStart=/usr/bin/node /home/pi/d2l-robust-mcp-server/dist/sync-cli.js
+# Exit code 2 means the login expired: shown as failed in systemctl status.
+Nice=10
+UMask=0077

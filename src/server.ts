@@ -11,7 +11,11 @@ import { enrollmentTools } from './tools/enrollments.js';
 import { fileTools } from './tools/files.js';
 import { sessionTools } from './tools/session.js';
 import { readTools, ToolContent } from './tools/read.js';
+import { studyTools } from './tools/study.js';
+import { courseworkTools } from './tools/coursework.js';
+import { acrossTools } from './tools/across.js';
 import { SessionExpiredError } from './session.js';
+import { registerPrompts, registerResources } from './prompts.js';
 
 const pkg = createRequire(import.meta.url)('../package.json') as { version: string };
 export const VERSION = pkg.version;
@@ -39,6 +43,9 @@ const readOnlyTools: Record<string, ToolDef> = {
   ...enrollmentTools,
   ...sessionTools,
   ...readTools,
+  ...studyTools,
+  ...courseworkTools,
+  ...acrossTools,
 };
 
 /** First line of an error, without terminal colour codes (Playwright adds a call log and ANSI codes). */
@@ -74,5 +81,7 @@ export function createServer(options: ServerOptions = {}): McpServer {
   const server = new McpServer({ name: 'd2l-brightspace', version: VERSION });
   for (const [name, tool] of Object.entries(readOnlyTools)) register(server, name, tool);
   if (options.enableDownload ?? true) register(server, 'download_file', fileTools.download_file);
+  registerPrompts(server);
+  registerResources(server);
   return server;
 }

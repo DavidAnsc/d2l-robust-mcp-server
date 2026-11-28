@@ -4,7 +4,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { HttpConfig } from './config.js';
 import { createServer } from './server.js';
 import { importCookies } from './auth.js';
-import { d2lHost } from './config.js';
+import { d2lHost, sessionPath } from './config.js';
+import { join } from 'path';
+import { OAuthServer } from './oauth.js';
 import { getSessionStatus, parseExportFile, SessionExpiredError } from './session.js';
 import { sessionStatusReport } from './tools/session.js';
 import { cleanMessage } from './server.js';
@@ -31,10 +33,12 @@ function matchMcpRoute(pathname: string): { pathToken?: string } | null {
   return m ? { pathToken: decodeURIComponent(m[1]) } : null;
 }
 
-function isAuthorized(req: IncomingMessage, opts: HttpOptions, pathToken?: string): boolean {
+function isAuthorized(req: IncomingMessage, opts: HttpOptions, pathToken?: string, oauth?: OAuthServer): boolean {
   if (!opts.token) return !!opts.allowNoAuth;
   const header = req.headers.authorization;
-  if (header?.startsWith('Bearer ') && sameSecret(header.slice(7).trim(), opts.token)) return true;
+  const bearer = header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
+  if (bearer && sameSecret(bearer, opts.token)) return true;
+  if (bearer && oauth?.verifyAccessToken(bearer)) return true;
   if (pathToken !== undefined && sameSecret(pathToken, opts.token)) return true;
   return false;
 }
@@ -127,9 +131,24 @@ export function createHttpApp(opts: HttpOptions): Server {
     );
   }
 
+  let oauth: OAuthServer | undefined;
+  if (opts.oauth) {
+    if (!opts.token) throw new Error('D2L_OAUTH needs D2L_HTTP_TOKEN: the sign-in page asks for it.');
+    if (!opts.publicUrl) throw new Error('D2L_OAUTH needs D2L_PUBLIC_URL, the https address clients reach this server at.');
+    oauth = new OAuthServer({
+      issuer: opts.publicUrl.replace(/\/+$/, ''),
+      password: opts.token,
+      statePath: opts.oauthStatePath ?? join(sessionPath(), 'oauth.json'),
+    });
+  }
+  // With OAuth on, a 401 tells the client where to find the sign-in metadata (RFC 9728).
+  const challenge = oauth ? `Bearer resource_metadata="${oauth.resourceMetadataUrl}"` : 'Bearer';
+
   return createHttpServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://localhost');
     try {
+      if (oauth && (await oauth.handle(req, res, url))) return;
+
       if (url.pathname === '/health') {
         if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'GET' });
         const live = url.searchParams.get('check') === 'true';
@@ -154,8 +173,8 @@ export function createHttpApp(opts: HttpOptions): Server {
       const route = matchMcpRoute(url.pathname);
       if (!route) return sendJson(res, 404, { error: 'Not found' });
 
-      if (!isAuthorized(req, opts, route.pathToken)) {
-        return sendJson(res, 401, { error: 'Unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
+      if (!isAuthorized(req, opts, route.pathToken, oauth)) {
+        return sendJson(res, 401, { error: 'Unauthorized' }, { 'WWW-Authenticate': challenge });
       }
 
       if (req.method !== 'POST') {
