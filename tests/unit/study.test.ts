@@ -20,6 +20,7 @@ vi.mock('../../src/client.js', async (importOriginal) => {
       getMyGradeValues: vi.fn(),
       getRubrics: vi.fn(),
       getForums: vi.fn(),
+      getDropboxFolders: vi.fn(),
       getForumTopics: vi.fn(),
       getTopicPosts: vi.fn(),
     },
@@ -31,7 +32,10 @@ import { client, D2LApiError } from '../../src/client.js';
 import { clearTocCache } from '../../src/content-tree.js';
 import { clearPagedDocs } from '../../src/tools/paged.js';
 import { clearReadCache } from '../../src/tools/read.js';
-import { buildAssignmentBundle, buildUnitMaterials, linksToAssignment, mentionPatterns, mentions, studyTools } from '../../src/tools/study.js';
+import { buildAssignmentBundle, buildUnitMaterials, findRelated, linksToAssignment, listUnitItems, mentionPatterns, mentions } from '../../src/tools/study.js';
+import { readFiles } from '../../src/tools/read.js';
+import { assignmentTools } from '../../src/tools/dropbox.js';
+import { newsTools } from '../../src/tools/news.js';
 import { contentTools } from '../../src/tools/content.js';
 
 const fixture = (n: string) => readFileSync(join(__dirname, '../fixtures/files', n));
@@ -204,16 +208,6 @@ describe('buildUnitMaterials', () => {
     await expect(buildUnitMaterials({ moduleTitle: 'Unit 99' })).rejects.toThrow(/No module's title matches "Unit 99". Top-level modules: "Unit 1: Circuits" \(10\)/);
   });
 
-  it('pages long output and reuses the built document for later parts', async () => {
-    happyPath();
-    const first = await studyTools.get_unit_materials.handler({ moduleId: 10, maxChars: 400 });
-    expect(first).toMatch(/^\[Part: characters 0–\d+ of \d+\. Call again with the same arguments and offset=(\d+)/);
-    const next = Number(first.match(/offset=(\d+)/)![1]);
-    const calls = vi.mocked(client.getContentToc).mock.calls.length;
-    const second = await studyTools.get_unit_materials.handler({ moduleId: 10, maxChars: 400, offset: next });
-    expect(second).toMatch(new RegExp(`^\\[Part: characters ${next}–`));
-    expect(vi.mocked(client.getContentToc).mock.calls.length).toBe(calls);
-  });
 });
 
 describe('content tools from the outline', () => {
@@ -229,5 +223,102 @@ describe('content tools from the outline', () => {
     happyPath();
     const out = JSON.parse(await contentTools.get_course_modules.handler({}));
     expect(out[0]).toMatchObject({ id: 10, topicCount: 6, subModules: [{ id: 11, title: 'Week 2' }] });
+  });
+});
+
+describe('list_unit_items', () => {
+  it('lists items with read refs only on readable ones, and module descriptions', async () => {
+    happyPath();
+    const out = await listUnitItems({ moduleTitle: 'Unit 1' });
+    expect(out.modules).toEqual([
+      { moduleId: 10, path: 'Unit 1: Circuits', description: 'Learning outcomes: Ohm and Kirchhoff.' },
+      { moduleId: 11, path: 'Unit 1: Circuits > Week 2' },
+    ]);
+    expect(out.counts).toEqual({ file: 3, link: 1, quiz: 1, assignment: 1 });
+    const notes = out.items.find((i) => i.title === 'Notes')!;
+    expect(notes.read).toEqual({ source: 'topic', orgUnitId: 100, topicId: 111 });
+    const link = out.items.find((i) => i.kind === 'link')!;
+    expect(link.read).toBeUndefined();
+    expect(link.url).toBe('https://publisher.example/ch2');
+    expect(out.items.find((i) => i.kind === 'assignment')!.assignmentId).toBe(77);
+    expect(client.getTopicFile).not.toHaveBeenCalled(); // listing reads nothing
+  });
+});
+
+describe('find_related', () => {
+  it('returns references and announcement text, without reading files', async () => {
+    happyPath();
+    const out = await findRelated({ assignmentId: 77 });
+    expect(out.content!.map((c) => [c.title, c.why])).toEqual([
+      ['Submit Homework 3', 'the link to this assignment'],
+      ['HW3 starter handout', 'its title names this assignment'],
+      ['Notes', 'in the same module as the assignment link'],
+      ['Textbook chapter', 'in the same module as the assignment link'],
+      ['Quiz 1', 'in the same module as the assignment link'],
+    ]);
+    expect(out.content![1].read).toEqual({ source: 'topic', orgUnitId: 100, topicId: 115 });
+    expect(out.announcements!.map((a) => a.title)).toEqual(['HW 3 deadline moved']);
+    expect(out.discussionsNote).toMatch(/searchDiscussions=true/);
+    expect(client.getTopicFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('get_assignment', () => {
+  it('adds the grade weight and read refs for attachments', async () => {
+    happyPath();
+    const out = JSON.parse(await assignmentTools.get_assignment.handler({ assignmentId: 77 }));
+    expect(out.gradeItem).toEqual({ name: 'Homework 3', maxPoints: 20, weight: 25, category: { name: 'Homework', weight: 30 } });
+    expect(out.attachments[0].read).toEqual({ source: 'assignment_attachment', orgUnitId: 100, assignmentId: 77, fileId: 5 });
+    expect(out.rubrics[0].criteria[0].name).toBe('Correctness');
+  });
+
+  it('filters the assignment list by status', async () => {
+    vi.mocked(client.getDropboxFolders).mockResolvedValue([
+      { ...ASSIGNMENT, Id: 1, Name: 'Past', DueDate: '2020-01-01T00:00:00Z' },
+      { ...ASSIGNMENT, Id: 2, Name: 'Future', DueDate: '2099-01-01T00:00:00Z' },
+      { ...ASSIGNMENT, Id: 3, Name: 'Undated', DueDate: null },
+    ]);
+    const names = async (status: 'upcoming' | 'past') => JSON.parse(await assignmentTools.get_assignments.handler({ status })).map((a: { name: string }) => a.name);
+    expect(await names('upcoming')).toEqual(['Future', 'Undated']);
+    expect(await names('past')).toEqual(['Past']);
+  });
+});
+
+describe('get_announcements filters', () => {
+  it('keeps announcements matching every query word, with attachment refs', async () => {
+    happyPath();
+    vi.mocked(client.getNews).mockResolvedValue([
+      { Id: 1, Title: 'Midterm room', Body: { Text: 'The midterm is in B12.', Html: '' }, CreatedDate: '2026-11-20T00:00:00Z', StartDate: null, Attachments: [{ FileId: 4, FileName: 'map.pdf', Size: 10 }], IsPublished: true },
+      { Id: 2, Title: 'Lab', Body: { Text: 'Lab is cancelled.', Html: '' }, CreatedDate: '2026-11-21T00:00:00Z', StartDate: null, Attachments: [], IsPublished: true },
+    ]);
+    const out = JSON.parse(await newsTools.get_announcements.handler({ query: 'midterm b12' }));
+    expect(out.map((a: { id: number }) => a.id)).toEqual([1]);
+    expect(out[0].attachments[0].read).toEqual({ source: 'announcement_attachment', orgUnitId: 100, announcementId: 1, fileId: 4 });
+  });
+});
+
+describe('read_files', () => {
+  it('reads several files, cuts long ones with the exact call for the rest, and isolates failures', async () => {
+    happyPath();
+    const [out] = await readFiles({
+      files: [
+        { source: 'topic', orgUnitId: 100, topicId: 111 },
+        { source: 'topic', orgUnitId: 100, topicId: 999 },
+        { source: 'topic', orgUnitId: 100, topicId: 115 },
+      ],
+      maxCharsPerFile: 2000,
+    });
+    const text = (out as { text: string }).text;
+    expect(text).toContain('=== [1] {"source":"topic","orgUnitId":100,"topicId":111}');
+    expect(text).toContain('--- Page 1 ---');
+    expect(text).toMatch(/=== \[2\][^\n]*\n(Could not read|Topic)/);
+    expect(text).toContain('Write 500 words'); // the third file still came through
+  });
+
+  it('says how to get the rest of a long file', async () => {
+    happyPath();
+    vi.mocked(client.getTopicFile).mockResolvedValue(file(Buffer.from('x'.repeat(5000)), 'long.txt'));
+    const [out] = await readFiles({ files: [{ source: 'topic', orgUnitId: 100, topicId: 1 }], maxCharsPerFile: 2000 });
+    expect((out as { text: string }).text).toContain('For the rest: read_file {"source":"topic","orgUnitId":100,"topicId":1,"offset":2000}');
   });
 });

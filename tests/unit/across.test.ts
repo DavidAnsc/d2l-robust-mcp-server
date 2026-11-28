@@ -112,9 +112,9 @@ describe('search_course', () => {
     vi.mocked(client.getQuizzes).mockRejectedValue(new D2LApiError(403, 'no'));
     const md = await acrossTools.search_course.handler({ query: 'eigenvalues' });
     expect(md).toContain('3 matches');
-    expect(md).toContain('(topicId 8)');
-    expect(md).toContain('(assignmentId 3)');
-    expect(md).toContain('(announcementId 9)');
+    expect(md).toContain('{"topicId":8,"read":{"source":"topic","orgUnitId":100,"topicId":8}}');
+    expect(md).toContain('{"assignmentId":3}');
+    expect(md).toContain('{"announcementId":9}');
     expect(md).toContain('Set includeFiles=true');
   });
 });

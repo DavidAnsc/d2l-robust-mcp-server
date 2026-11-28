@@ -5,13 +5,18 @@ D2L Brightspace. It lets an AI assistant look up your courses, assignments, due 
 announcements, quizzes, discussions and course content, and read the files in them: lecture
 slides, PDFs, assignment handouts, your own submissions and your instructors' feedback.
 
-Two jobs get a tool of their own, because they need many pieces at once:
+The tools are small and chain together, so the agent decides what to look at. Listing tools
+return items with a `"read"` reference. The agent passes those references to `read_files` and
+reads only what's relevant. For example:
 
-- **A guide for one assignment.** `get_assignment_bundle` returns its instructions, rubric,
-  grade weight, the text of its attached files, related course content, announcements that
-  mention it and your feedback, in one document.
-- **A study guide for a test.** `get_unit_materials` returns the text of every slide deck,
-  PDF, document and page in one or more units, in course order.
+- **A guide for one assignment:** `get_assignment` (instructions, rubric, weight,
+  attachments), then `find_related` (content and announcements about it), then `read_files`
+  on the handouts that matter.
+- **A study guide for a test:** `list_unit_items` for the units, then `read_files` on the
+  slides, notes and worksheets, plus `read_file asImages=true` for diagram-heavy slides.
+
+The server sends this map of the tools to every client when it connects, and the
+`assignment-guide` and `study-guide` prompts walk through it.
 
 It runs either as a local program (stdio, for Claude Desktop and similar apps) or as an HTTP
 server on an always-on machine such as a Raspberry Pi. In HTTP mode, remote clients and
@@ -130,13 +135,15 @@ units, hourly keep-alive, expiry notifications, re-login with `--push`), see
 
 ## Tools
 
-**For guides and study guides**
+**Find, then read**
 
 | Tool | What it returns |
 | --- | --- |
-| `get_assignment_bundle` | Everything about one assignment, as one Markdown document: dates, points, grade weight, instructions, the **rubric**, the text of every attached file, course content that links to or names it (with text), announcements and (optionally) discussion posts that mention it, your submissions, feedback and grade |
-| `get_unit_materials` | Every item in one or more modules (by id or title, e.g. `"Unit 3"`), then the text of every file and page in course order under its module path. Links, videos, quizzes and external tools are listed with what they are. `manifestOnly`, `kinds` and `extensions` narrow it |
-| `search_course` | Where a word or "phrase" appears: content titles, assignment instructions, announcements, quizzes, and with `includeFiles` inside every slide and PDF page |
+| `list_unit_items` | Everything in one or more modules (by id or title, e.g. `"Unit 3"`, sub-modules included): each item's kind, place, last change and description, module descriptions (often the learning outcomes), and `read` refs for the readable ones. `kinds` and `extensions` narrow it |
+| `find_related` | What points at one assignment: content that links to or names it (matching short forms like "HW3"), the items next to that link, announcements that mention it and, optionally, discussion posts. References, not file contents |
+| `search_course` | Where a word or "phrase" appears: content titles, assignment instructions, announcements, quizzes, and with `includeFiles` inside every slide and PDF page. Each match carries its ids and `read` ref |
+| `read_files` | Up to 20 files in one call from their `read` refs, each under its own header. Long files are cut to a share, with the exact `read_file` call for the rest |
+| `read_file` | One file, long ones in parts; `asImages` returns pictures of pages or slides instead |
 
 **Across courses**
 
@@ -151,29 +158,31 @@ units, hourly keep-alive, expiry notifications, re-login with `--push`), see
 
 | Tool | What it returns |
 | --- | --- |
-| `get_course_content` | The full outline: modules and topics, with each topic's kind (file, page, link, video, assignment, quiz, discussion, external tool, SCORM…) and last change |
+| `get_course_content` | The full outline: modules and topics, with each topic's kind (file, page, link, video, assignment, quiz, discussion, external tool, SCORM…), last change and `read` ref |
 | `get_course_modules` / `get_course_module` | Top-level sections; everything inside one section |
 | `get_course_topic` | One topic or lecture item |
-| `get_course_overview` | The Course Overview page and its file (often the syllabus), plus items titled like a syllabus, outline or schedule, with their text |
-| `get_assignments` / `get_assignment` | Assignments with due dates, instructions and rubrics; full details of one |
-| `get_assignment_submissions` | Your submissions (every attempt), feedback, feedback files and grade for one assignment |
+| `get_course_overview` | The Course Overview page, its file (often the syllabus) and items titled like a syllabus, outline or schedule, with `read` refs (`includeText` reads them too) |
+| `get_assignments` | Assignments with due dates, points and instructions; `status` (upcoming/past) and `dueWithinDays` filter them |
+| `get_assignment` | One assignment: instructions, dates, the **rubric**, its grade item and weight, links, and attachments with `read` refs |
+| `get_assignment_submissions` | Your submissions (every attempt), feedback and grade, with `read` refs for submitted and feedback files |
 | `get_quizzes` / `get_quiz` | Quizzes with dates, time limit, attempts allowed and instructions; your attempts where shown |
 | `get_discussions` / `get_discussion_posts` | Forums and topics; the posts of one topic as threads |
 | `get_checklists` | Checklists with their categories and items |
 | `get_my_grades` | Your grade items, scores and feedback |
 | `get_grade_breakdown` | Categories and items with weights and max points, your score on each, your final grade if released |
-| `get_announcements` | Course announcements |
+| `get_announcements` | Course announcements with attachment `read` refs; `since` and `query` filter them |
 
 **Files and the login**
 
 | Tool | What it returns |
 | --- | --- |
-| `read_file` | The contents of a file: content topics, assignment attachments, your submitted files, feedback files, announcement attachments, the overview file. `asImages` returns pictures of pages or slides instead |
 | `download_file` | Saves a course file to disk (stdio only by default) and returns its text |
 | `get_session_status` | Whether the saved login still works |
 
-Long results (bundles, units, searches, posts, long files) come in parts: each reply says
-which `offset` to ask for next.
+A `read` ref is exactly the arguments `read_file` and `read_files` take, e.g.
+`{"source":"topic","orgUnitId":12345,"topicId":678}`, so the agent can copy it from any
+listing. Long results (files, searches, posts, what's new) come in parts: each reply says which
+`offset` to ask for next.
 
 `read_file` returns text from PDF (page by page), PowerPoint `.pptx` (slide by slide, with
 speaker notes), Word `.docx`, Excel `.xlsx` (every sheet), HTML (with images noted by their alt
@@ -204,10 +213,12 @@ the tools say so and point to any captions file.
 For clients that use them, the server also offers:
 
 - **Prompts:** `assignment-guide` (course, assignment), `study-guide` (course, units, test) and
-  `catch-up` (since). Each one is a ready-made request that tells the model which tools to call
-  and how to lay out the result.
-- **Resources:** `d2l://courses`, `d2l://course/{orgUnitId}/assignment/{assignmentId}` (the
-  bundle), `d2l://course/{orgUnitId}/module/{moduleId}` (the unit's material) and
+  `catch-up` (since). Each one is a ready-made request: it suggests which tools to use and how
+  to lay out the result, and leaves what to read to the model.
+- **Resources**, for attaching a whole document to a conversation yourself:
+  `d2l://courses`, `d2l://course/{orgUnitId}/assignment/{assignmentId}` (the assignment with
+  its rubric, files, related content and feedback), `d2l://course/{orgUnitId}/module/{moduleId}`
+  (the text of everything in a module) and
   `d2l://course/{orgUnitId}/topic/{topicId}` (one file's text). Assignments and modules of
   your active courses are listed.
 
@@ -227,7 +238,7 @@ d2l-mcp-sync --course 12345 --skip units
 ```
 
 For each course this writes `README.md` (an index), `overview.md`, `announcements.md`,
-`assignments/<name>.md` (one bundle each) and `units/<nn>-<module>.md` (the text of each
+`assignments/<name>.md` (each assignment with its rubric, files, related content and feedback) and `units/<nn>-<module>.md` (the text of each
 top-level module). Later runs reuse the text cache, so they only download what changed. An agent
 can read or search the folder even while the Brightspace login has expired. On a Pi,
 `deploy/systemd/d2l-mcp-sync.timer` runs it every 6 hours. It exits with code 2 when the login
@@ -359,8 +370,10 @@ src/
   http.ts          streamable HTTP transport, token check, /health
   oauth.ts         single-user OAuth 2.1 server for HTTP mode
   tools/           one module per area; each tool is { description, schema, handler }
-                   (study.ts: bundle and unit materials; across.ts: active courses, what's new,
-                   search; coursework.ts: quizzes, discussions, grades, overview, checklists)
+                   (refs.ts: the shared "read" ref; study.ts: list_unit_items, find_related, and
+                   the whole-document builders used by sync and resources; across.ts: active
+                   courses, what's new, search; coursework.ts: quizzes, discussions, grades,
+                   overview, checklists)
   utils/marshal.ts trims API responses into compact, model-friendly JSON
 ```
 
@@ -370,8 +383,9 @@ add the client call it needs, and spread the module into `readOnlyTools` in `src
 ## What changed from upstream
 
 - **Added:**
-  - `get_assignment_bundle`, `get_unit_materials` and `search_course`, plus the
-    `assignment-guide`, `study-guide` and `catch-up` prompts and `d2l://` resources
+  - composable tools for guides: `list_unit_items`, `find_related`, `search_course` and
+    `read_files`, with a `read` ref on every readable item; server instructions, the
+    `assignment-guide`, `study-guide` and `catch-up` prompts, and `d2l://` resources
   - rubrics on assignments; quizzes, discussions, checklists, grade weights, the course overview
   - `get_active_courses` and `whats_new` across courses
   - a disk cache of extracted text, and `d2l-mcp-sync` for a Markdown copy of each course

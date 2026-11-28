@@ -1,10 +1,11 @@
 /**
- * Tools that gather everything for one job in one call:
- *  - get_assignment_bundle: all there is to know about one assignment, to write a guide for it;
- *  - get_unit_materials: the text of every file and page in a unit, to write a study guide.
+ * Finding what belongs together, so an agent can decide what to read:
+ *  - list_unit_items: everything in one or more modules, each readable item with a "read" ref;
+ *  - find_related: what in the course points at an assignment (content, announcements, posts).
  *
- * Both return Markdown in parts (see paged.ts), because a whole unit easily runs to
- * hundreds of thousands of characters.
+ * These tools list; they don't read file contents. The agent reads what it judges useful with
+ * read_files. (buildAssignmentBundle and buildUnitMaterials, which do read everything, are kept
+ * for d2l-mcp-sync and the d2l:// resources, where a complete document on disk is the point.)
  */
 import { z } from 'zod';
 import { client } from '../client.js';
@@ -36,11 +37,12 @@ import {
   RawAssignment,
   RawRubric,
   RawSubmission,
+  removeEmpty,
   rubricToMarkdown,
   stripHtml,
 } from '../utils/marshal.js';
-import { courseIdParam, resolveCourseId } from './common.js';
-import { docKey, pagedDocument, pageParams } from './paged.js';
+import { courseIdParam, resolveCourseId, toJson } from './common.js';
+import { topicRef } from './refs.js';
 import { loadFile, ReadArgs, ReadFile } from './read.js';
 
 /** Files fetched at once. Low on purpose: the Pi, and the school's servers. */
@@ -370,7 +372,7 @@ const NOT_READABLE: Partial<Record<TopicKind, string>> = {
   other: 'an item this server cannot read',
 };
 
-async function resolveUnits(course: number, args: UnitArgs): Promise<{ toc: RawTocModule[]; units: FoundModule[] }> {
+export async function resolveUnits(course: number, args: UnitArgs): Promise<{ toc: RawTocModule[]; units: FoundModule[] }> {
   const toc = await getToc(course);
   const units: FoundModule[] = [];
   const ids = [...(args.moduleId ? [args.moduleId] : []), ...(args.moduleIds ?? [])];
@@ -394,7 +396,7 @@ async function resolveUnits(course: number, args: UnitArgs): Promise<{ toc: RawT
   return { toc, units };
 }
 
-function wanted(f: FlatTopic, args: UnitArgs): boolean {
+export function wanted(f: FlatTopic, args: UnitArgs): boolean {
   if (args.kinds?.length && !args.kinds.includes(f.kind)) return false;
   if (args.extensions?.length) {
     const path = (f.topic.Url || f.topic.Title).split('?')[0].toLowerCase();
@@ -463,46 +465,138 @@ export async function buildUnitMaterials(args: UnitArgs): Promise<string> {
 
 const assignmentIdParam = z.number().int().positive().describe('The assignment Id from get_assignments.');
 
+/** One content item as the listing tools show it, with a read ref when it has text. */
+export function itemSummary(course: number, f: FlatTopic, extra: Record<string, unknown> = {}) {
+  const readable = READABLE_KINDS.has(f.kind);
+  return removeEmpty({
+    title: f.topic.Title,
+    kind: f.kind,
+    where: f.path.join(' > '),
+    topicId: f.topic.TopicId,
+    lastModified: formatDate(f.topic.LastModifiedDate),
+    description: stripHtml(f.topic.Description?.Text || f.topic.Description?.Html) || null,
+    ...extra,
+    read: readable ? topicRef(course, f.topic.TopicId) : undefined,
+    url: !readable ? f.topic.Url || null : null,
+    note: !readable ? NOT_READABLE[f.kind] ?? null : null,
+    assignmentId: f.kind === 'assignment' ? f.topic.ToolItemId ?? null : null,
+  });
+}
+
+export async function listUnitItems(args: UnitArgs) {
+  const course = resolveCourseId(args.orgUnitId);
+  const { units } = await resolveUnits(course, args);
+  const all = units.flatMap((u) => walkModule(u.module, u.parents));
+  const items = all.filter((f) => wanted(f, args));
+  const counts: Record<string, number> = {};
+  for (const f of items) counts[f.kind] = (counts[f.kind] ?? 0) + 1;
+
+  const modules: Array<Record<string, unknown>> = [];
+  for (const u of units) {
+    const visit = (m: RawTocModule, parents: string[]) => {
+      modules.push(removeEmpty({ moduleId: m.ModuleId, path: [...parents, m.Title].join(' > '), description: moduleDescription(m) || null }));
+      for (const c of m.Modules ?? []) visit(c, [...parents, m.Title]);
+    };
+    visit(u.module, u.parents);
+  }
+  return {
+    course,
+    modules,
+    counts,
+    filteredOut: all.length - items.length || undefined,
+    items: items.map((f) => itemSummary(course, f)),
+    next: 'Read the items you need with read_files (pass their "read" refs, up to 20 at a time). For slides that rely on diagrams or equations, read_file with asImages=true.',
+  };
+}
+
+interface RelatedArgs {
+  orgUnitId?: number;
+  assignmentId: number;
+  searchDiscussions?: boolean;
+}
+
+/**
+ * What in the course points at an assignment: content that links to it or names it (and the
+ * readable items beside the link), announcements that mention it, and optionally discussion
+ * posts. References and short texts only; no file contents.
+ */
+export async function findRelated(args: RelatedArgs) {
+  const course = resolveCourseId(args.orgUnitId);
+  const raw = (await client.getDropboxFolder(course, args.assignmentId)) as RawAssignment;
+  const patterns = mentionPatterns(raw.Name);
+  const [toc, news] = await Promise.all([optional(() => getToc(course)), optional(async () => (await client.getNews(course)) as RawAnnouncement[])]);
+
+  const all = walkToc(toc.value ?? []);
+  const linked = all.filter((f) => linksToAssignment(f.topic, args.assignmentId));
+  const linkedModules = new Set(linked.map((f) => f.moduleId));
+  const named = all.filter((f) => !linked.includes(f) && mentions(f.topic.Title, patterns));
+  const nearby = all.filter((f) => linkedModules.has(f.moduleId) && !linked.includes(f) && !named.includes(f));
+
+  const announcements = (news.value ?? [])
+    .filter((n) => mentions(`${n.Title}\n${n.Body?.Text || stripHtml(n.Body?.Html)}`, patterns))
+    .map((n) =>
+      removeEmpty({
+        announcementId: n.Id,
+        title: n.Title,
+        date: formatDate(n.CreatedDate),
+        body: stripHtml(n.Body?.Text || n.Body?.Html),
+        attachments: n.Attachments?.map((f) => ({ name: f.FileName, read: { source: 'announcement_attachment', orgUnitId: course, announcementId: n.Id, fileId: f.FileId } })),
+      })
+    );
+
+  let discussionPosts: string[] | string | undefined;
+  if (args.searchDiscussions) discussionPosts = await discussionMentions(course, patterns);
+
+  return removeEmpty({
+    assignment: { id: raw.Id, name: raw.Name },
+    matchedBy: patterns.map((p) => p.source),
+    content: [
+      ...linked.map((f) => itemSummary(course, f, { why: 'the link to this assignment' })),
+      ...named.map((f) => itemSummary(course, f, { why: 'its title names this assignment' })),
+      ...nearby.map((f) => itemSummary(course, f, { why: 'in the same module as the assignment link' })),
+    ],
+    announcements,
+    announcementsNote: news.error ? `Announcements: ${news.error}.` : undefined,
+    discussionPosts: Array.isArray(discussionPosts) ? discussionPosts : undefined,
+    discussionsNote: typeof discussionPosts === 'string' ? discussionPosts : args.searchDiscussions ? undefined : 'Discussions not searched; pass searchDiscussions=true to include posts that mention it (slower).',
+    next: 'Read whichever of these look useful with read_files. "Nearby" items are often lecture notes or templates for the assignment, but not always.',
+  });
+}
+
+const unitSchema = {
+  orgUnitId: courseIdParam,
+  moduleId: z.number().int().positive().optional().describe('A ModuleId from get_course_content.'),
+  moduleIds: z.array(z.number().int().positive()).max(30).optional().describe('Several modules at once, e.g. every week before a midterm.'),
+  moduleTitle: z.string().min(1).optional().describe('Find modules by title, e.g. "Unit 3". Exact matches win; otherwise every title containing it as whole words.'),
+  kinds: z.array(z.enum(KINDS)).optional().describe('Keep only these kinds of item, e.g. ["file","page"].'),
+  extensions: z.array(z.string()).optional().describe('Keep only files with these extensions, e.g. ["pptx","pdf"].'),
+};
+
 export const studyTools = {
-  get_assignment_bundle: {
+  list_unit_items: {
     description:
-      `Everything about one assignment in a single Markdown document, for writing a guide to it: due and availability dates, ` +
-      `points and grade weight, full instructions, the rubric (every criterion and level), the text of every attached file, ` +
-      `course content that links to or names the assignment (with the text of those files), announcements that mention it, ` +
-      `optionally discussion posts that mention it, and your submissions, feedback and grade. ` +
-      `Long results come in parts: the reply says which offset to pass next.`,
+      `List everything in one or more course modules (a unit, week or topic, sub-modules included): each item's ` +
+      `title, kind (file, page, link, video, assignment, quiz, discussion, external_tool, scorm…), where it sits, ` +
+      `last change and description, plus each module's description (often the learning outcomes). Readable ` +
+      `items carry a "read" ref for read_files; the others say what they are. Choose modules with moduleId, ` +
+      `moduleIds or moduleTitle (e.g. "Week 7"); narrow with kinds or extensions. Use this to plan a study guide, ` +
+      `then read what matters.`,
+    schema: unitSchema,
+    handler: async (args: UnitArgs) => toJson(await listUnitItems(args)),
+  },
+
+  find_related: {
+    description:
+      `Find what in a course points at one assignment: content that links to it or names it, the items next to ` +
+      `that link (often notes or templates), announcements that mention it (with their text) and, with ` +
+      `searchDiscussions=true, discussion posts that do. Matches short forms ("HW3" for "Homework 3"). Returns ` +
+      `references, not file contents: read the useful ones with read_files. Pair with get_assignment ` +
+      `(instructions, rubric, weight, attachments) when writing an assignment guide.`,
     schema: {
       orgUnitId: courseIdParam,
       assignmentId: assignmentIdParam,
-      includeFileText: z.boolean().optional().describe('Include the text of attached and related files (default true).'),
-      includeRelatedContent: z.boolean().optional().describe('Look for related course content (default true).'),
-      relatedFileChars: z.number().int().min(1000).max(200_000).optional().describe('Most characters kept from each related content file (default 20000). Attachments are never cut.'),
-      searchDiscussions: z.boolean().optional().describe('Also search every discussion topic for posts that mention the assignment (slower; default false).'),
-      ...pageParams,
+      searchDiscussions: z.boolean().optional().describe('Also search every discussion topic for posts that mention it (slower; default false).'),
     },
-    handler: (args: BundleArgs) =>
-      pagedDocument(docKey('bundle', { ...args, orgUnitId: resolveCourseId(args.orgUnitId) }), args.offset, args.maxChars, () => buildAssignmentBundle(args)),
-  },
-
-  get_unit_materials: {
-    description:
-      `All the material in one or more course modules (a unit, a week, a topic) as one Markdown document, for writing a ` +
-      `study guide: a numbered list of every item, then the extracted text of every file (slides with speaker notes, PDFs ` +
-      `page by page, Word, Excel) and web page, in course order, under its module path. Items that can't be read here ` +
-      `(links, videos, quizzes, external tools) are listed with what they are. Choose the unit with moduleId, moduleIds, ` +
-      `or moduleTitle (e.g. "Unit 3" or "Week 7"; sub-modules are included). Use manifestOnly=true to see the list first, ` +
-      `and kinds/extensions to keep only some items. Long results come in parts: the reply says which offset to pass next.`,
-    schema: {
-      orgUnitId: courseIdParam,
-      moduleId: z.number().int().positive().optional().describe('A ModuleId from get_course_content.'),
-      moduleIds: z.array(z.number().int().positive()).max(30).optional().describe('Several modules at once, e.g. every week before a midterm.'),
-      moduleTitle: z.string().min(1).optional().describe('Find modules by title, e.g. "Unit 3". Exact matches win; otherwise every title containing it.'),
-      kinds: z.array(z.enum(KINDS)).optional().describe('Keep only these kinds of item, e.g. ["file","page"].'),
-      extensions: z.array(z.string()).optional().describe('Keep only files with these extensions, e.g. ["pptx","pdf"].'),
-      manifestOnly: z.boolean().optional().describe('Only list the items; read nothing (fast).'),
-      ...pageParams,
-    },
-    handler: (args: UnitArgs) =>
-      pagedDocument(docKey('unit', { ...args, orgUnitId: resolveCourseId(args.orgUnitId) }), args.offset, args.maxChars, () => buildUnitMaterials(args)),
+    handler: async (args: RelatedArgs) => toJson(await findRelated(args)),
   },
 };

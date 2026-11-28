@@ -25,7 +25,7 @@ function promptText(lines: string[]): { messages: Array<{ role: 'user'; content:
 export function registerPrompts(server: McpServer): void {
   server.prompt(
     'assignment-guide',
-    'Write a complete guide for one assignment from everything Brightspace has on it.',
+    'Write a guide for one assignment from what Brightspace has on it.',
     {
       course: z.string().describe('Course name, code or orgUnitId'),
       assignment: z.string().describe('Assignment name or id'),
@@ -34,27 +34,26 @@ export function registerPrompts(server: McpServer): void {
       promptText([
         `Write me a guide for the assignment "${assignment}" in my course "${course}".`,
         '',
-        `1. ${COURSE_HINT} If I named the assignment, find its id with get_assignments.`,
-        '2. Call get_assignment_bundle for it, reading every part (follow the offset hints until the last part).',
-        '3. If the instructions point to other material (a reading, a lecture, a template), open it with read_file, or',
-        '   get_unit_materials for a whole module. If something is unclear, call get_assignment_bundle again with searchDiscussions=true.',
-        '4. Write the guide with these sections:',
-        '   - What to hand in, how, and when (date, time and time zone; late policy if stated; individual or group).',
-        '   - The task, in plain words, broken into steps.',
-        '   - How it is graded: every rubric criterion and what earns full marks; its weight in the final grade.',
-        '   - Required format and constraints (length, file type, citation style, templates).',
-        '   - Material from the course to use, with where it is (module and file names).',
-        '   - Clarifications from announcements or discussions.',
-        '   - A checklist to tick off before submitting.',
-        "   - Open questions: anything the sources don't settle, to ask the instructor.",
-        'Quote the exact wording for requirements and dates. Cite the source of each point (instructions, rubric, a file, an announcement).',
-        'Do not write the assignment itself.',
+        'Gather what you need, using your judgement about what is relevant:',
+        `- ${COURSE_HINT} Find the assignment with get_assignments if I didn't give its id.`,
+        '- get_assignment: instructions, rubric, weight, and the attached files (read them with read_files).',
+        '- find_related: content that links to or names it, and announcements about it. Read the items that look',
+        '  useful (handouts, templates, the lecture it builds on) with read_files; skip what clearly is not.',
+        '- If the instructions leave something open, check announcements and discussions (find_related with',
+        '  searchDiscussions=true, or search_course) before saying it is unclear.',
+        '- If I have already submitted, get_assignment_submissions shows my feedback.',
+        '',
+        'Then write the guide. Cover what to hand in, how and when (exact date, time and zone); the task in steps;',
+        'how it is graded (every rubric criterion, what earns full marks, its weight); format rules; which course',
+        'material to use and where it is; clarifications from announcements; a checklist before submitting; and',
+        'open questions to ask the instructor. Quote exact wording for requirements and dates, and say where each',
+        'point comes from. Do not write the assignment itself.',
       ])
   );
 
   server.prompt(
     'study-guide',
-    'Write a study guide for a test from every slide, document and worksheet in the units it covers.',
+    'Write a study guide for a test from the slides, documents and worksheets in the units it covers.',
     {
       course: z.string().describe('Course name, code or orgUnitId'),
       units: z.string().describe('The units, weeks or topics the test covers, e.g. "Units 3-5" or "Weeks 1 to 6"'),
@@ -64,19 +63,20 @@ export function registerPrompts(server: McpServer): void {
       promptText([
         `Make me a study guide${test ? ` for ${test}` : ''} in my course "${course}", covering ${units}.`,
         '',
-        `1. ${COURSE_HINT}`,
-        '2. Call get_course_content to find the modules for those units; then get_unit_materials with their moduleIds',
-        '   (manifestOnly=true first if there are many), and read every part (follow the offset hints to the end).',
-        '3. For slides whose meaning is in a diagram or equation, look at them with read_file asImages=true.',
-        `4. Check get_quizzes and get_course_overview for what the test covers, its format and length${test ? `, and search_course for "${test}"` : ''}.`,
-        '5. Write the guide:',
-        '   - What the test covers and its format, if known (date, length, question types, allowed aids).',
-        '   - For each unit: the key ideas and definitions, every formula with what each symbol means,',
-        '     and a worked example for each method, in the order the course teaches them.',
-        '   - Connections between units, and common mistakes the slides warn about.',
-        '   - Practice questions with answers, based on the worksheets and examples in the materials.',
-        '   - A one-page summary sheet at the end.',
-        'Name the file each point comes from, and say which items could not be read (videos, links, external tools).',
+        'Gather what you need, using your judgement:',
+        `- ${COURSE_HINT}`,
+        '- Find the modules with get_course_content (or list_unit_items with moduleTitle), then list_unit_items',
+        '  for them. Module descriptions often state the learning outcomes: use them to decide what matters.',
+        '- Read the substantive material with read_files in batches: lecture slides, notes, worksheets and their',
+        '  solutions, practice tests. Skip administrative items. For slides whose meaning is in a diagram or an',
+        '  equation, look at them with read_file asImages=true.',
+        `- Check what the test covers and its format: get_quizzes, get_course_overview, and search_course${test ? ` for "${test}"` : ''} or get_announcements with a query.`,
+        '',
+        'Then write the guide: what the test covers and its format if known; for each unit the key ideas,',
+        'definitions, every formula with what each symbol means, and a worked example of each method, in the',
+        'order the course teaches them; links between units and common mistakes; practice questions with',
+        'answers based on the worksheets; and a one-page summary. Name the file each point comes from, and',
+        'list the items you could not read (videos, links, external tools).',
       ])
   );
 
@@ -87,9 +87,10 @@ export function registerPrompts(server: McpServer): void {
     ({ since }) =>
       promptText([
         `Catch me up on my courses since ${since ?? 'a week ago'}.`,
-        `Call whats_new${since ? ` with since="${since}"` : ''} and read every part. Then summarize, most urgent first:`,
-        'deadlines in the next week, new announcements that change something (dates, requirements, rooms),',
-        'new grades and feedback, and new material to review. Keep it short and give exact dates.',
+        `Start with whats_new${since ? ` (since="${since}")` : ''}; open anything that needs a closer look (an announcement's`,
+        'attachment, a changed file, new feedback). Then summarize, most urgent first: deadlines in the next week,',
+        'announcements that change something (dates, requirements, rooms), new grades and feedback, and new',
+        'material to review. Keep it short and give exact dates.',
       ])
   );
 }

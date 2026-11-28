@@ -47,7 +47,7 @@ describe('createServer', () => {
     const c = await connected();
     const names = (await c.listTools()).tools.map((t) => t.name);
     expect(names).toContain('download_file');
-    expect(names).toHaveLength(26);
+    expect(names).toHaveLength(27);
   });
 
   it('can leave download_file out', async () => {
@@ -90,7 +90,18 @@ describe('prompts and resources', () => {
     );
     const p = await c.getPrompt({ name: 'assignment-guide', arguments: { course: 'EE101', assignment: 'Lab 2' } });
     const text = (p.messages[0].content as { text: string }).text;
-    expect(text).toContain('get_assignment_bundle');
+    expect(text).toContain('find_related');
+    expect(text).toContain('read_files');
     expect(text).toContain('Do not write the assignment itself.');
+  });
+});
+
+describe('server instructions', () => {
+  it('tell the client how the tools fit together', async () => {
+    const c = await connected();
+    const text = c.getInstructions() ?? '';
+    expect(text).toContain('"read" ref');
+    expect(text).toContain('read_files');
+    expect(text).toContain('list_unit_items');
   });
 });

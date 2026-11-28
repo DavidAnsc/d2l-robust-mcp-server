@@ -22,6 +22,7 @@ import {
 import { courseIdParam, resolveCourseId, toJson } from './common.js';
 import { docKey, pagedDocument, pageParams } from './paged.js';
 import { loadFile } from './read.js';
+import { topicRef } from './refs.js';
 import { tolerant } from './tolerant.js';
 
 const DAY = 864e5;
@@ -188,7 +189,8 @@ export function queryTerms(query: string): string[] {
 
 export interface Hit {
   where: string;
-  ref: string;
+  /** The ids to open it with. */
+  ids: Record<string, unknown>;
   score: number;
   snippet: string;
 }
@@ -237,10 +239,11 @@ async function buildSearch(args: SearchArgs): Promise<string> {
   const terms = queryTerms(args.query);
   if (!terms.length) throw new Error('query is empty.');
   const hits: Hit[] = [];
-  const consider = (where: string, ref: string, text: string) => {
+  const consider = (where: string, ids: Record<string, unknown>, text: string) => {
     const s = scoreText(text, terms);
-    if (s) hits.push({ where, ref, score: s.score, snippet: snippet(text, s.at) });
+    if (s) hits.push({ where, ids, score: s.score, snippet: snippet(text, s.at) });
   };
+  const topicIds = (f: FlatTopic) => ({ topicId: f.topic.TopicId, ...(READABLE_KINDS.has(f.kind) ? { read: topicRef(course, f.topic.TopicId) } : {}) });
 
   const [toc, assignments, news, quizzes] = await Promise.all([
     tolerant(() => getToc(course)),
@@ -251,15 +254,15 @@ async function buildSearch(args: SearchArgs): Promise<string> {
   const topics = walkToc(toc.value ?? []);
   for (const f of topics) {
     const desc = stripHtml(f.topic.Description?.Text || f.topic.Description?.Html);
-    consider(`Content: ${f.path.join(' > ')} > ${f.topic.Title} [${f.kind}]`, `topicId ${f.topic.TopicId}`, `${f.topic.Title}\n${f.path.join(' ')}\n${desc}`);
+    consider(`Content: ${f.path.join(' > ')} > ${f.topic.Title} [${f.kind}]`, topicIds(f), `${f.topic.Title}\n${f.path.join(' ')}\n${desc}`);
   }
   for (const a of assignments.value ?? []) {
-    consider(`Assignment: ${a.Name}`, `assignmentId ${a.Id}`, `${a.Name}\n${stripHtml(a.CustomInstructions?.Text || a.CustomInstructions?.Html)}`);
+    consider(`Assignment: ${a.Name}`, { assignmentId: a.Id }, `${a.Name}\n${stripHtml(a.CustomInstructions?.Text || a.CustomInstructions?.Html)}`);
   }
   for (const n of news.value ?? []) {
-    consider(`Announcement: ${n.Title} (${formatDate(n.CreatedDate)})`, `announcementId ${n.Id}`, `${n.Title}\n${stripHtml(n.Body?.Text || n.Body?.Html)}`);
+    consider(`Announcement: ${n.Title} (${formatDate(n.CreatedDate)})`, { announcementId: n.Id }, `${n.Title}\n${stripHtml(n.Body?.Text || n.Body?.Html)}`);
   }
-  for (const q of quizzes.value ?? []) consider(`Quiz: ${q.Name}`, `quizId ${q.QuizId}`, `${q.Name}\n${stripHtml(q.Description?.Text?.Text || q.Description?.Text?.Html)}`);
+  for (const q of quizzes.value ?? []) consider(`Quiz: ${q.Name}`, { quizId: q.QuizId }, `${q.Name}\n${stripHtml(q.Description?.Text?.Text || q.Description?.Text?.Html)}`);
 
   let filesRead = 0;
   if (args.includeFiles) {
@@ -269,7 +272,7 @@ async function buildSearch(args: SearchArgs): Promise<string> {
       if (!got.value || typeof got.value === 'string') return;
       filesRead++;
       for (const s of sections(got.value.extracted.text)) {
-        consider(`File: ${f.path.join(' > ')} > ${f.topic.Title}${s.label ? `, ${s.label}` : ''}`, `topicId ${f.topic.TopicId}`, s.text);
+        consider(`File: ${f.path.join(' > ')} > ${f.topic.Title}${s.label ? `, ${s.label}` : ''}`, topicIds(f), s.text);
       }
     });
   }
@@ -282,7 +285,7 @@ async function buildSearch(args: SearchArgs): Promise<string> {
       (args.includeFiles ? `, and the text of ${filesRead} files.` : '. Set includeFiles=true to search inside slides, PDFs and documents too (slower the first time).'),
     ''
   );
-  for (const h of hits.slice(0, max)) out.push(`- **${h.where}** (${h.ref})`, `  ${h.snippet}`);
+  for (const h of hits.slice(0, max)) out.push(`- **${h.where}** ${JSON.stringify(h.ids)}`, `  ${h.snippet}`);
   return out.join('\n') + '\n';
 }
 
@@ -324,8 +327,8 @@ export const acrossTools = {
     description:
       `Find where something is mentioned in a course: content titles and descriptions, assignment instructions, ` +
       `announcements and quizzes, and with includeFiles=true the text of every slide deck, PDF, document and page ` +
-      `(results name the slide or page). All words must appear; use "quotes" for a phrase. Returns ids to open with ` +
-      `read_file, get_assignment_bundle or get_unit_materials.`,
+      `(results name the slide or page). All words must appear; use "quotes" for a phrase. Each match carries its ` +
+      `ids, and a "read" ref for files: pass those to read_files.`,
     schema: {
       orgUnitId: courseIdParam,
       query: z.string().min(1).describe('Words to find, e.g. eigenvalue or "Bayes theorem".'),

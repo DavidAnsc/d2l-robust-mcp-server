@@ -235,7 +235,7 @@ export async function buildOverview(course: number, includeText: boolean): Promi
         const f = await tolerant(() => loadFile({ source: 'overview_attachment', orgUnitId: course }));
         if (f.value && typeof f.value !== 'string') out.push(`### Attached file: ${f.value.filename}`, '', f.value.extracted.text, '');
         else out.push(`_(Overview attachment: ${f.error ?? f.value}.)_`, '');
-      } else out.push('_(Has an attached file: read_file source=overview_attachment.)_', '');
+      } else out.push(`_(Has an attached file, read: ${JSON.stringify({ source: 'overview_attachment', orgUnitId: course })})_`, '');
     }
   }
 
@@ -243,7 +243,10 @@ export async function buildOverview(course: number, includeText: boolean): Promi
   const candidates = walkToc(toc.value ?? []).filter((f) => SYLLABUS.test(f.topic.Title) || f.path.some((p) => /^(syllabus|course (information|info|outline))/i.test(p)));
   out.push('## Syllabus-like items in the content', '');
   if (!candidates.length) out.push('_(No content items are titled like a syllabus or outline.)_', '');
-  for (const f of candidates) out.push(`- [${f.kind}] ${f.path.join(' > ')} > ${f.topic.Title} (topicId ${f.topic.TopicId})`);
+  for (const f of candidates) {
+    const ref = f.kind === 'file' || f.kind === 'page' ? ` read: ${JSON.stringify({ source: 'topic', orgUnitId: course, topicId: f.topic.TopicId })}` : '';
+    out.push(`- [${f.kind}] ${f.path.join(' > ')} > ${f.topic.Title} (topicId ${f.topic.TopicId})${ref}`);
+  }
   out.push('');
   if (includeText) {
     for (const f of candidates.filter((c) => c.kind === 'file' || c.kind === 'page').slice(0, 3)) {
@@ -377,17 +380,17 @@ export const courseworkTools = {
 
   get_course_overview: {
     description:
-      `The course's overview/syllabus: the Course Overview page and its attached file (often the syllabus PDF), plus every ` +
-      `content item titled like a syllabus, course outline or schedule, with the text of up to three of them. Use to answer ` +
-      `questions about course policies, late penalties, exam dates and what each unit covers.`,
+      `The course's overview/syllabus: the Course Overview page, its attached file (often the syllabus PDF) and every ` +
+      `content item titled like a syllabus, course outline or schedule, each with a "read" ref. Set includeText=true to ` +
+      `also get the text of the file and up to three items. Use for course policies, late penalties, exam dates, what each unit covers.`,
     schema: {
       orgUnitId: courseIdParam,
-      includeText: z.boolean().optional().describe('Include the text of the overview file and syllabus items (default true).'),
+      includeText: z.boolean().optional().describe('Also include the text of the overview file and up to three syllabus items (default false).'),
       ...pageParams,
     },
     handler: (args: { orgUnitId?: number; includeText?: boolean; offset?: number; maxChars?: number }) => {
       const course = resolveCourseId(args.orgUnitId);
-      return pagedDocument(docKey('overview', { ...args, orgUnitId: course }), args.offset, args.maxChars, () => buildOverview(course, args.includeText ?? true));
+      return pagedDocument(docKey('overview', { ...args, orgUnitId: course }), args.offset, args.maxChars, () => buildOverview(course, args.includeText ?? false));
     },
   },
 

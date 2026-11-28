@@ -1,4 +1,3 @@
-import { D2LApiError } from '../client.js';
 import { SessionExpiredError } from '../session.js';
 
 export interface Tolerant<T> {
@@ -17,8 +16,10 @@ export async function tolerant<T>(fn: () => Promise<T>): Promise<Tolerant<T>> {
     return { value: await fn() };
   } catch (error) {
     if (error instanceof SessionExpiredError) throw error;
-    if (error instanceof D2LApiError && (error.status === 403 || error.status === 404)) {
-      return { error: error.status === 403 ? 'not available to students at this school' : 'not found' };
+    // Checked by shape, not class, so this module needn't load the API client.
+    const status = (error as { status?: unknown } | null)?.status;
+    if (status === 403 || status === 404) {
+      return { error: status === 403 ? 'not available to students at this school' : 'not found' };
     }
     return { error: error instanceof Error ? error.message : String(error) };
   }

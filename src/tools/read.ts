@@ -6,6 +6,9 @@ import { fetchWithSession } from './files.js';
 import { courseIdParam, resolveCourseId } from './common.js';
 import { cacheDir } from '../config.js';
 import { diskCacheGet, diskCachePut } from '../cache.js';
+import { mapLimit } from '../content-tree.js';
+import { SessionExpiredError } from '../session.js';
+import { readRefSchema } from './refs.js';
 
 /** Text or image blocks, as an MCP tool result carries them. */
 export type ToolContent =
@@ -295,6 +298,52 @@ async function keyFor(args: ReadArgs): Promise<string | null> {
   }
 }
 
+/** Default characters per file in read_files, and the most in one reply overall. */
+const BATCH_PER_FILE = 15_000;
+const BATCH_TOTAL = 150_000;
+
+interface BatchArgs {
+  files: ReadArgs[];
+  maxCharsPerFile?: number;
+}
+
+/**
+ * Several files in one reply, each under its own header. A file longer than its share is cut,
+ * and its header says exactly which read_file call gets the rest, so the agent decides what to
+ * read in full. A file that fails says why without stopping the others.
+ */
+export async function readFiles(args: BatchArgs): Promise<ToolContent[]> {
+  const per = Math.min(args.maxCharsPerFile ?? BATCH_PER_FILE, BATCH_TOTAL);
+  const share = Math.max(2000, Math.min(per, Math.floor(BATCH_TOTAL / Math.max(1, args.files.length))));
+  const parts = await mapLimit(args.files, 2, async (ref, i) => {
+    const label = `[${i + 1}] ${JSON.stringify(ref)}`;
+    try {
+      const got = await loadFile(ref, { preferCache: true });
+      if (typeof got === 'string') return `=== ${label}\n${got}`;
+      const { extracted } = got;
+      const lines = [`=== ${label}`, describe(got)];
+      if (extracted.note) lines.push(`Note: ${extracted.note}`);
+      if (extracted.image) {
+        lines.push('(An image: read it with read_file to see it.)');
+        return lines.join('\n');
+      }
+      const { slice, next } = sliceText(extracted.text, 0, share);
+      if (next !== null) {
+        lines.push(
+          `Showing characters 0–${slice.length} of ${extracted.text.length}. ` +
+            `For the rest: read_file ${JSON.stringify({ ...ref, offset: next })}`
+        );
+      }
+      lines.push('', slice || '(no text)');
+      return lines.join('\n');
+    } catch (error) {
+      if (error instanceof SessionExpiredError) throw error;
+      return `=== ${label}\nCould not read: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  });
+  return [{ type: 'text', text: parts.join('\n\n') }];
+}
+
 const id = (what: string) => z.number().int().positive().optional().describe(what);
 
 export const readTools = {
@@ -338,5 +387,19 @@ export const readTools = {
       pages: z.string().optional().describe(`With asImages: which pages or slides, e.g. "3", "2-5", "1,4,7-9". Default the first ${MAX_PICTURES}.`),
     },
     handler: readFile,
+  },
+
+  read_files: {
+    description:
+      `Read several files in one call (up to 20): pass the "read" references that other tools list ` +
+      `(list_unit_items, get_course_content, get_assignment, find_related, search_course, get_announcements, ` +
+      `get_assignment_submissions). Each file comes under its own header. A file longer than its share ` +
+      `(maxCharsPerFile, default ${BATCH_PER_FILE}; ${BATCH_TOTAL} in total) is cut, and its header gives the exact read_file ` +
+      `call for the rest. Use it to read the files that matter in batches rather than one at a time.`,
+    schema: {
+      files: z.array(readRefSchema).min(1).max(20).describe('File references to read, in the order you want them.'),
+      maxCharsPerFile: z.number().int().min(2000).max(BATCH_TOTAL).optional().describe(`Most characters per file (default ${BATCH_PER_FILE}).`),
+    },
+    handler: readFiles,
   },
 };
